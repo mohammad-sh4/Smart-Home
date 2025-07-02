@@ -39,6 +39,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
 #include <Ticker.h>
+#include <ESP32Servo.h>  // Add servo library for ESP32
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
@@ -64,10 +65,9 @@ static const BaseType_t app_cpu = 1;
 #define smokeSensor 25            // MQ2 smoke and gas sensor
 #define touchSensor 4             // Touch sensor (GPIO 4)
 #define echo 2                    // Ultrasonic sensor echo pin
-#define trigger 15                // Ultrasonic sensor trigger pin
-         
-/* Relay pins */          
-#define fanRelay 17               // Relay for fan
+#define trigger 15                // Ultrasonic sensor trigger pin         
+/* Control pins */          
+#define fanServo 17               // Servo motor for fan simulation
 #define lightRelay 16             // Relay for light
 
 /* Buzzer pins */
@@ -90,6 +90,16 @@ DHT dht(DHTPIN, DHTTYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 BluetoothSerial SerialBT;                                 
 Ticker ultrasonic;
+Servo fanServoMotor;  // Servo object for fan simulation
+
+/* Non-blocking servo sweep variables */
+unsigned long servoLastUpdate = 0;
+int servoCurrentPos = 0;
+int servoTargetPos = 0;
+bool servoSweepActive = false;
+bool servoDirection = true;  // true = forward (0->180), false = backward (180->0)
+enum ServoState { SERVO_OFF, SERVO_SWEEP_UP, SERVO_SWEEP_DOWN, SERVO_HOLD };
+ServoState servoState = SERVO_OFF;
 
 /* Defining queues */
 static QueueHandle_t tempReading;
@@ -107,6 +117,49 @@ bool lightStatus = false;
 bool smokeStatus = false;
 bool touchStatus = false;
 bool ultrasonicStatus = false;
+/*
+* ---------------------------------------------------------------------------------------------------------------------------------
+* Non-blocking servo sweep function
+* ---------------------------------------------------------------------------------------------------------------------------------
+*/
+
+void updateServoSweep() {
+  unsigned long currentTime = millis();
+    // Update servo position every 10ms for faster movement
+  if (currentTime - servoLastUpdate >= 10) {
+    servoLastUpdate = currentTime;
+    
+    switch (servoState) {
+      case SERVO_OFF:
+        fanServoMotor.write(0);
+        servoCurrentPos = 0;
+        break;
+        
+      case SERVO_SWEEP_UP:
+        if (servoCurrentPos < 180) {
+          servoCurrentPos += 3;  // Move 3 degrees at a time for faster speed
+          fanServoMotor.write(servoCurrentPos);
+        } else {
+          servoState = SERVO_SWEEP_DOWN;  // Switch to sweeping down
+        }
+        break;
+        
+      case SERVO_SWEEP_DOWN:
+        if (servoCurrentPos > 0) {
+          servoCurrentPos -= 3;  // Move 3 degrees at a time for faster speed
+          fanServoMotor.write(servoCurrentPos);
+        } else {
+          servoState = SERVO_SWEEP_UP;  // Switch to sweeping up for continuous operation
+        }
+        break;
+        
+      case SERVO_HOLD:
+        fanServoMotor.write(servoCurrentPos);
+        break;
+    }
+  }
+}
+
 /*
 * ---------------------------------------------------------------------------------------------------------------------------------
 * Temperature monitoring and fan control 
@@ -137,14 +190,33 @@ void tempRead(void *parameter) {
     // SerialBT.print("#");    // Commented out - Bluetooth disabled
     // SerialBT.print(t);      // Commented out - Bluetooth disabled
     // SerialBT.print("?");    // Commented out - Bluetooth disabled
-    
-    /* Print temperature and humidity values on serial monitor */
+      /* Print temperature and humidity values on serial monitor */
     Serial.print("Temperature: "); 
     Serial.print(t); 
     Serial.println(" °C");
-    
     Serial.println("Sending temperature to queue...");
     xQueueSend (tempReading, (void*)&t, 10);
+    
+    // Non-blocking fan control based on temperature
+    if (t >= 33) {
+      if (servoState == SERVO_OFF) {
+        Serial.println("Temperature high - starting continuous fan sweep pattern");
+        servoState = SERVO_SWEEP_UP;
+        servoCurrentPos = 0;
+        fanStatus = true;
+      }
+    }
+    else if (t < 33) {
+      if (servoState != SERVO_OFF) {
+        Serial.println("Temperature normal - stopping fan sweep");
+        servoState = SERVO_OFF;
+        fanStatus = false; 
+      }
+    }
+    
+    // Update servo position (non-blocking)
+    updateServoSweep();
+    
     vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
 }
@@ -152,19 +224,31 @@ void tempRead(void *parameter) {
 /* Task for fan control in auto mode */
 void autoFan(void *parameter) {
   int tempValue;
+  Serial.println("autoFan task started, waiting for temperature data...");
   
   while (true) { 
+    Serial.println("autoFan: Waiting for temperature reading...");
     xQueueReceive(tempReading, (void *)&tempValue, portMAX_DELAY);    
-      if (tempValue >= 33) {
+    Serial.print("autoFan: Received temperature: ");
+    Serial.print(tempValue);
+    Serial.println("°C");
+    
+    if (tempValue >= 33) {
       // SerialBT.print ("Fan on?");  // Bluetooth disabled
-      digitalWrite(fanRelay,LOW); ;
+      Serial.println("Temperature high - starting continuous fan sweep");
+      if (servoState == SERVO_OFF) {
+        servoState = SERVO_SWEEP_UP;
+        servoCurrentPos = 0;
+      }
       fanStatus = true;
     }
     else if (tempValue < 33) {
       // SerialBT.print ("Fan off?");  // Bluetooth disabled
-      digitalWrite(fanRelay,HIGH);
+      Serial.println("Temperature normal - stopping fan sweep");
+      servoState = SERVO_OFF;
       fanStatus = false; 
     }
+    
     vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
@@ -185,6 +269,10 @@ void lightRead(void *parameter) {
     Serial.println(lightValue);
 
     xQueueSend (lightReading, (void*)&lightValue, 10);
+    
+    // Update servo sweep to maintain smooth operation
+    updateServoSweep();
+    
     vTaskDelay(2000 / portTICK_PERIOD_MS);
   } 
 }
@@ -219,10 +307,12 @@ void autoLight(void *parameter) {
 void smokeDetect(void *parameter) {
   int smokeValue;
   
-  while (true) {    smokeValue = analogRead(smokeSensor); 
+  while (true) {
+    smokeValue = analogRead(smokeSensor); 
     Serial.print("Smoke: ");
     Serial.println(smokeValue);
-      if (smokeValue >= 3200) {
+    
+    if (smokeValue >= 3200) {
       Serial.println("SMOKE DETECTED! Activating buzzer and LED");
       // SerialBT.print("Smoke active?");  // Bluetooth disabled
       digitalWrite(smokeLed, HIGH);
@@ -236,6 +326,9 @@ void smokeDetect(void *parameter) {
       noTone(smokeBuzzer);  // Turn off tone
       smokeStatus = false; 
     }
+    
+    // Update servo sweep to maintain smooth operation
+    updateServoSweep();
     
     vTaskDelay(1000 / portTICK_PERIOD_MS);      
   }
@@ -471,9 +564,9 @@ void setup() {
   
   Serial.println("Initializing ultrasonic timer...");
   ultrasonic.attach(1, ultrasonicDetect);
-  Serial.println("Ultrasonic timer initialized");
-  /* Defining pin modes */  
-  pinMode(fanRelay, OUTPUT);
+  Serial.println("Ultrasonic timer initialized");  /* Defining pin modes and initializing servo */  
+  fanServoMotor.attach(fanServo);  // Attach servo to pin 17
+  Serial.println("Fan servo motor attached to pin 17");
   pinMode(lightRelay, OUTPUT);
   pinMode(smokeLed, OUTPUT);
   pinMode(touchLed, OUTPUT);
@@ -483,9 +576,9 @@ void setup() {
   pinMode(trigger, OUTPUT);
   pinMode(echo, INPUT);
   Serial.println("Pin modes configured");
-
-  /* Relays off at start */
-  digitalWrite(fanRelay, HIGH);                              
+  /* Initial states */
+  fanServoMotor.write(0);  // Set servo to 0° (fan off position)
+  Serial.println("Fan servo set to OFF position (0°)");
   digitalWrite(lightRelay, HIGH);                            
   
   /* Buzzers off at start */
@@ -494,7 +587,8 @@ void setup() {
 
   /* Leds off at start */
   digitalWrite(smokeLed, LOW);                           
-  digitalWrite(touchLed, LOW);                                   digitalWrite(ultrasonicLed, LOW);
+  digitalWrite(touchLed, LOW);                                   
+  digitalWrite(ultrasonicLed, LOW);
   Serial.println("Initial pin states set");
   // Test buzzer functionality
   Serial.println("Testing smoke buzzer with tone...");
@@ -506,13 +600,12 @@ void setup() {
   tempReading = xQueueCreate(10, sizeof(int));
   lightReading = xQueueCreate(10, sizeof(int));
   Serial.println("Queues created");
-    /* Creating tasks */
-  Serial.println("Creating FreeRTOS tasks...");
+    /* Creating tasks */  Serial.println("Creating FreeRTOS tasks...");
   xTaskCreatePinnedToCore (tempRead, "Temp read", 1024, NULL, 1, NULL, app_cpu);
   Serial.println("Created tempRead task");
   
-  xTaskCreatePinnedToCore (autoFan, "Auto fan", 1024, NULL, 1, &autoFan_handle, app_cpu);
-  Serial.println("Created autoFan task");
+  // xTaskCreatePinnedToCore (autoFan, "Auto fan", 1024, NULL, 1, &autoFan_handle, app_cpu);
+  // Serial.println("Created autoFan task - DISABLED, fan control moved to tempRead task");
   
   xTaskCreatePinnedToCore (lightRead, "Light read", 1024, NULL, 1, NULL, app_cpu);
   Serial.println("Created lightRead task");
@@ -531,17 +624,18 @@ void setup() {
   
   xTaskCreatePinnedToCore (indicatorDisplay, "OLED display", 2048, NULL, 1, NULL, app_cpu);
   Serial.println("Created indicatorDisplay task");
-  
   Serial.println("All tasks created");
     
-/* Suspending auto mode tasks at start */
-  vTaskSuspend (autoFan_handle);
-  vTaskSuspend (autoLight_handle);
-  Serial.println("Auto mode tasks suspended");
+/* Fan control now integrated in tempRead task, only suspending light control */
+  // vTaskSuspend (autoFan_handle);     // autoFan task disabled
+  vTaskSuspend (autoLight_handle);     // Suspend light control only
+  Serial.println("Auto LIGHT mode suspended, Fan control integrated in temperature task");
   Serial.println("Setup completed successfully!");
 }
 
 void loop() {
-  vTaskDelay(500 / portTICK_PERIOD_MS);
+  // Update servo sweep in main loop to ensure it's always running
+  updateServoSweep();
+  vTaskDelay(5 / portTICK_PERIOD_MS);  // Small delay to prevent overwhelming the system
 }
 

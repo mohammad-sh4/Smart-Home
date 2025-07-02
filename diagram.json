@@ -48,6 +48,15 @@
       "top": -16.8,
       "left": -199.8,
       "attrs": { "volume": "0.1" }
+    },
+    { "type": "wokwi-led", "id": "led1", "top": 6, "left": 176.6, "attrs": { "color": "red" } },
+    {
+      "type": "wokwi-servo",
+      "id": "servo1",
+      "top": -69.2,
+      "left": -480,
+      "rotate": 180,
+      "attrs": { "horn": "cross", "hornColor": "black" }
     }
   ],
   "connections": [
@@ -70,8 +79,13 @@
     [ "ldr1:VCC", "vcc1:VCC", "red", [ "h0" ] ],
     [ "ldr1:GND", "gnd1:GND", "black", [ "h0" ] ],
     [ "ldr1:AO", "esp:26", "green", [ "h0" ] ],
-    [ "bz1:1", "gnd1:GND", "green", [ "v0" ] ],
-    [ "bz1:2", "esp:14", "green", [ "v0" ] ]
+    [ "bz1:2", "esp:14", "green", [ "v0" ] ],
+    [ "bz1:1", "gnd1:GND", "black", [ "v0" ] ],
+    [ "led1:A", "esp:19", "green", [ "v0" ] ],
+    [ "led1:C", "esp:GND.3", "black", [ "v0" ] ],
+    [ "servo1:GND", "gnd1:GND", "black", [ "h12.4", "v316", "h672" ] ],
+    [ "servo1:V+", "vcc1:VCC", "green", [ "h22", "v306.3", "h604.8" ] ],
+    [ "servo1:PWM", "esp:17", "green", [ "h70", "v143" ] ]
   ],
   "dependencies": {}
 }
