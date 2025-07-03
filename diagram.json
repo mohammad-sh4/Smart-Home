@@ -57,6 +57,13 @@
       "left": -480,
       "rotate": 180,
       "attrs": { "horn": "cross", "hornColor": "black" }
+    },
+    {
+      "type": "wokwi-led-ring",
+      "id": "ring1",
+      "top": -277.76,
+      "left": 154.79,
+      "attrs": { "pixels": "16" }
     }
   ],
   "connections": [
@@ -85,7 +92,10 @@
     [ "led1:C", "esp:GND.3", "black", [ "v0" ] ],
     [ "servo1:GND", "gnd1:GND", "black", [ "h12.4", "v316", "h672" ] ],
     [ "servo1:V+", "vcc1:VCC", "green", [ "h22", "v306.3", "h604.8" ] ],
-    [ "servo1:PWM", "esp:17", "green", [ "h70", "v143" ] ]
+    [ "servo1:PWM", "esp:17", "green", [ "h70", "v143" ] ],
+    [ "ring1:GND", "gnd1:GND", "black", [ "v0" ] ],
+    [ "ring1:VCC", "vcc1:VCC", "red", [ "v0" ] ],
+    [ "ring1:DIN", "esp:16", "green", [ "v0" ] ]
   ],
   "dependencies": {}
 }

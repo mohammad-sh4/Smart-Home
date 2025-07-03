@@ -40,6 +40,7 @@
 #include <Adafruit_GFX.h>
 #include <Ticker.h>
 #include <ESP32Servo.h>  // Add servo library for ESP32
+#include <Adafruit_NeoPixel.h>  // Add NeoPixel library for LED ring
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
@@ -68,7 +69,8 @@ static const BaseType_t app_cpu = 1;
 #define trigger 15                // Ultrasonic sensor trigger pin         
 /* Control pins */          
 #define fanServo 17               // Servo motor for fan simulation
-#define lightRelay 16             // Relay for light
+#define lightNeoPixel 16          // NeoPixel ring LED for light simulation
+#define NEOPIXEL_COUNT 16         // Number of LEDs in the ring (adjust as needed)
 
 /* Buzzer pins */
 #define smokeBuzzer 14            // Buzzer for alerting smoke or gas
@@ -91,6 +93,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 BluetoothSerial SerialBT;                                 
 Ticker ultrasonic;
 Servo fanServoMotor;  // Servo object for fan simulation
+Adafruit_NeoPixel lightRing(NEOPIXEL_COUNT, lightNeoPixel, NEO_GRB + NEO_KHZ800);  // NeoPixel ring for light simulation
 
 /* Non-blocking servo sweep variables */
 unsigned long servoLastUpdate = 0;
@@ -255,6 +258,55 @@ void autoFan(void *parameter) {
 
 /*
 * ---------------------------------------------------------------------------------------------------------------------------------
+* NeoPixel light control functions
+* ---------------------------------------------------------------------------------------------------------------------------------
+*/
+
+/* Turn on NeoPixel ring with warm white light */
+void turnOnLight() {
+  Serial.println("Turning ON NeoPixel light");
+ 
+  for(int i = 0; i < NEOPIXEL_COUNT; i++) {
+    lightRing.setPixelColor(i, lightRing.Color(255, 245, 235));
+  }
+  lightRing.show();
+  lightStatus = true;
+}
+
+/* Turn on NeoPixel ring with breathing effect (optional) */
+void turnOnLightWithEffect() {
+  Serial.println("Turning ON NeoPixel light ring with breathing effect");
+  static int brightness = 50;
+  static int direction = 1;
+  
+  brightness += direction * 10;
+  if (brightness >= 255) {
+    brightness = 255;
+    direction = -1;
+  } else if (brightness <= 50) {
+    brightness = 50;
+    direction = 1;
+  }
+  
+  // Set all LEDs to warm white with varying brightness
+  for(int i = 0; i < NEOPIXEL_COUNT; i++) {
+    lightRing.setPixelColor(i, lightRing.Color(brightness, brightness * 0.7, brightness * 0.47));
+  }
+  lightRing.show();
+  lightStatus = true;
+}
+
+/* Turn off NeoPixel ring */
+void turnOffLight() {
+  Serial.println("Turning OFF NeoPixel light");
+  // Turn off all LEDs
+  lightRing.clear();
+  lightRing.show();
+  lightStatus = false;
+}
+
+/*
+* ---------------------------------------------------------------------------------------------------------------------------------
 * LDR based bulb control 
 * ---------------------------------------------------------------------------------------------------------------------------------
 */
@@ -280,18 +332,31 @@ void lightRead(void *parameter) {
 /* Task for bulb control in auto mode */
 void autoLight(void *parameter) {
   int lightValue;
+  Serial.println("autoLight task started, waiting for light sensor data...");
   
   while (true) { 
+    Serial.println("autoLight: Waiting for light reading...");
     xQueueReceive(lightReading, (void *)&lightValue, portMAX_DELAY);    
-      if (lightValue >= 2200) {
+    Serial.print("autoLight: Received light value: ");
+    Serial.println(lightValue);
+    
+    if (lightValue >= 2200) {
       // SerialBT.print("Bulb on?");  // Bluetooth disabled
-      digitalWrite(lightRelay,LOW);
-      lightStatus = true;
+      // if (!lightStatus) {  // Only turn on if currently off
+        Serial.print("Light level low (");
+        Serial.print(lightValue);
+        Serial.println(") - turning ON NeoPixel light");
+        turnOnLight();
+      // }
     }
     else if (lightValue < 2200) {
       // SerialBT.print("Bulb off?");  // Bluetooth disabled
-      digitalWrite(lightRelay,HIGH); 
-      lightStatus = false;
+      // if (lightStatus) {  // Only turn off if currently on
+        Serial.print("Light level sufficient (");
+        Serial.print(lightValue);
+        Serial.println(") - turning OFF NeoPixel light");
+        turnOffLight();
+      // }
     }
     vTaskDelay(200 / portTICK_PERIOD_MS);
   } 
@@ -564,10 +629,14 @@ void setup() {
   
   Serial.println("Initializing ultrasonic timer...");
   ultrasonic.attach(1, ultrasonicDetect);
-  Serial.println("Ultrasonic timer initialized");  /* Defining pin modes and initializing servo */  
+  Serial.println("Ultrasonic timer initialized");  /* Defining pin modes and initializing servo and NeoPixel */  
   fanServoMotor.attach(fanServo);  // Attach servo to pin 17
   Serial.println("Fan servo motor attached to pin 17");
-  pinMode(lightRelay, OUTPUT);
+  
+  lightRing.begin();  // Initialize NeoPixel ring
+  lightRing.show();   // Turn off all pixels initially
+  Serial.println("NeoPixel light ring initialized on pin 16");
+  
   pinMode(smokeLed, OUTPUT);
   pinMode(touchLed, OUTPUT);
   pinMode(ultrasonicLed, OUTPUT);
@@ -579,7 +648,9 @@ void setup() {
   /* Initial states */
   fanServoMotor.write(0);  // Set servo to 0° (fan off position)
   Serial.println("Fan servo set to OFF position (0°)");
-  digitalWrite(lightRelay, HIGH);                            
+  
+  turnOffLight();  // Turn off NeoPixel light initially
+  Serial.println("NeoPixel light initialized to OFF state");                            
   
   /* Buzzers off at start */
   digitalWrite(touchBuzzer, LOW);                            
@@ -590,11 +661,7 @@ void setup() {
   digitalWrite(touchLed, LOW);                                   
   digitalWrite(ultrasonicLed, LOW);
   Serial.println("Initial pin states set");
-  // Test buzzer functionality
-  Serial.println("Testing smoke buzzer with tone...");
-  tone(smokeBuzzer, 1000, 1000);  // 1000Hz tone for 1000ms
-  delay(1100);  // Wait for tone to complete
-  Serial.println("Buzzer test completed");
+
 
   /* Creating queues */
   tempReading = xQueueCreate(10, sizeof(int));
@@ -626,10 +693,9 @@ void setup() {
   Serial.println("Created indicatorDisplay task");
   Serial.println("All tasks created");
     
-/* Fan control now integrated in tempRead task, only suspending light control */
-  // vTaskSuspend (autoFan_handle);     // autoFan task disabled
-  vTaskSuspend (autoLight_handle);     // Suspend light control only
-  Serial.println("Auto LIGHT mode suspended, Fan control integrated in temperature task");
+  // vTaskSuspend (autoFan_handle);     // autoFan task disabled - fan control moved to tempRead task
+  // vTaskSuspend (autoLight_handle);   // Light control is now ACTIVE with NeoPixel
+  Serial.println("Auto LIGHT mode is ACTIVE with NeoPixel, Fan control integrated in temperature task");
   Serial.println("Setup completed successfully!");
 }
 
