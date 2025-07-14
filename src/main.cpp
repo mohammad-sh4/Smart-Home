@@ -63,7 +63,7 @@ static const BaseType_t app_cpu = 1;
 #define DHTTYPE DHT22
 #define lightSensor 26            // LDR sensor
 #define smokeSensor 25            // MQ2 smoke and gas sensor
-#define touchSensor 4             // Touch sensor (GPIO 4)
+#define touchButton 4             // Push button for touch simulation (GPIO 4)
 #define echo 2                    // Ultrasonic sensor echo pin
 #define trigger 15                // Ultrasonic sensor trigger pin         
 /* Control pins */          
@@ -371,17 +371,52 @@ void smokeDetect(void *parameter) {
   }
 }
 
-/* Task for detecting touch using inbuilt touch sensor */
+/* Task for detecting button press (simulating touch) */
 void touchDetect(void *parameter) {
-  int touchValue;
+  int buttonState;
+  int lastButtonState = HIGH;  // Assume button is not pressed initially
+  unsigned long lastDebounceTime = 0;
+  unsigned long debounceDelay = 50;  // 50ms debounce delay
   
-  while (true) {    touchValue = (touchRead(touchSensor));  
-    if (touchValue < 20) {
-      // SerialBT.print("Touch active?");  // Bluetooth disabled
-      digitalWrite(touchLed, HIGH);
-      digitalWrite(touchBuzzer, HIGH);
-      touchStatus = true; 
+  while (true) {
+    buttonState = digitalRead(touchButton);
+    
+    // Check if button state has changed (with debouncing)
+    if (buttonState != lastButtonState) {
+      lastDebounceTime = millis();
     }
+    
+    if ((millis() - lastDebounceTime) > debounceDelay) {
+      // Button is pressed (LOW because of pull-up resistor)
+      if (buttonState == LOW && !touchStatus) {  // Only trigger if not already active
+        Serial.println("SECURITY ALERT! Touch detected - activating alarm");
+        digitalWrite(touchLed, HIGH);
+        tone(touchBuzzer, 1500);  // Use tone() for active buzzer, 1500Hz frequency
+        touchStatus = true;
+        Serial.println("Touch alarm is ACTIVE - needs manual reset via app/button");
+        
+        // In a real system, this would be reset via app/web interface
+        // For simulation, we'll reset after a longer period or via long press
+      }
+      // Long press (hold for 3+ seconds) to reset the alarm
+      else if (buttonState == LOW && touchStatus) {
+        unsigned long pressStart = millis();
+        while (digitalRead(touchButton) == LOW && (millis() - pressStart) < 3000) {
+          vTaskDelay(100 / portTICK_PERIOD_MS);
+        }
+        
+        if ((millis() - pressStart) >= 3000) {
+          Serial.println("Long press detected - RESETTING touch alarm");
+          digitalWrite(touchLed, LOW);
+          noTone(touchBuzzer);  // Turn off tone
+          touchStatus = false;
+          Serial.println("Touch alarm has been RESET");
+        }
+      }
+    }
+    
+    lastButtonState = buttonState;
+    vTaskDelay(10 / portTICK_PERIOD_MS);  // Small delay to prevent excessive polling
   }
 }
 
@@ -415,15 +450,70 @@ void ultrasonicDetect() {
 
 /*
 * ---------------------------------------------------------------------------------------------------------------------------------
+* Security system control functions
+* ---------------------------------------------------------------------------------------------------------------------------------
+*/
+
+/* Reset touch alarm manually (normally called from app/web interface) */
+void resetTouchAlarm() {
+  if (touchStatus) {
+    Serial.println("Manual reset of touch alarm requested");
+    digitalWrite(touchLed, LOW);
+    noTone(touchBuzzer);
+    touchStatus = false;
+    Serial.println("Touch alarm has been manually RESET");
+  }
+}
+
+/* Check and maintain security alarms */
+void securitySystemMaintenance() {
+  // In a real system, this would handle:
+  // - Web/app commands to reset alarms
+  // - Automatic timeout after X hours
+  // - Security log entries
+  
+  // For simulation: auto-reset touch alarm after 30 seconds for demo purposes
+  static unsigned long touchAlarmStart = 0;
+  static bool alarmTimerStarted = false;
+  
+  if (touchStatus && !alarmTimerStarted) {
+    touchAlarmStart = millis();
+    alarmTimerStarted = true;
+    Serial.println("Touch alarm timer started (30s auto-reset for demo)");
+  }
+  
+  if (touchStatus && alarmTimerStarted && (millis() - touchAlarmStart) > 30000) {
+    Serial.println("Auto-resetting touch alarm after 30 seconds (demo mode)");
+    resetTouchAlarm();
+    alarmTimerStarted = false;
+  }
+  
+  if (!touchStatus) {
+    alarmTimerStarted = false;
+  }
+}
+
+/*
+* ---------------------------------------------------------------------------------------------------------------------------------
 * App based switch controls
 * ---------------------------------------------------------------------------------------------------------------------------------
 */
 
 /* Task for controlling relays and alarms using app */
 void switchControl(void *parameter) {
-  // Bluetooth disabled temporarily - this task won't do anything for now
+  Serial.println("switchControl task started - handling security system");
+  
   while (true) {
-    vTaskDelay(1000 / portTICK_PERIOD_MS); // Just wait
+    // Handle security system maintenance
+    securitySystemMaintenance();
+    
+    // In a real system, this would also handle:
+    // - Bluetooth/WiFi commands from mobile app
+    // - Web interface commands
+    // - Manual override switches
+    // - Scheduled operations
+    
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
@@ -607,6 +697,9 @@ void setup() {
   
   pinMode(lightRelay, OUTPUT);     // Configure relay pin for LED control
   Serial.println("Light relay configured on pin 16");
+  
+  pinMode(touchButton, INPUT_PULLUP);  // Configure button with pull-up resistor
+  Serial.println("Touch button configured on pin 4");
   
   pinMode(smokeLed, OUTPUT);
   pinMode(touchLed, OUTPUT);
