@@ -40,7 +40,6 @@
 #include <Adafruit_GFX.h>
 #include <Ticker.h>
 #include <ESP32Servo.h>  // Add servo library for ESP32
-#include <Adafruit_NeoPixel.h>  // Add NeoPixel library for LED ring
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
@@ -69,8 +68,7 @@ static const BaseType_t app_cpu = 1;
 #define trigger 15                // Ultrasonic sensor trigger pin         
 /* Control pins */          
 #define fanServo 17               // Servo motor for fan simulation
-#define lightNeoPixel 16          // NeoPixel ring LED for light simulation
-#define NEOPIXEL_COUNT 16         // Number of LEDs in the ring (adjust as needed)
+#define lightRelay 16             // Relay for LED light control
 
 /* Buzzer pins */
 #define smokeBuzzer 14            // Buzzer for alerting smoke or gas
@@ -93,7 +91,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 BluetoothSerial SerialBT;                                 
 Ticker ultrasonic;
 Servo fanServoMotor;  // Servo object for fan simulation
-Adafruit_NeoPixel lightRing(NEOPIXEL_COUNT, lightNeoPixel, NEO_GRB + NEO_KHZ800);  // NeoPixel ring for light simulation
 
 /* Non-blocking servo sweep variables */
 unsigned long servoLastUpdate = 0;
@@ -258,51 +255,26 @@ void autoFan(void *parameter) {
 
 /*
 * ---------------------------------------------------------------------------------------------------------------------------------
-* NeoPixel light control functions
+* LED light control functions via relay
 * ---------------------------------------------------------------------------------------------------------------------------------
 */
 
-/* Turn on NeoPixel ring with warm white light */
+/* Turn on LED light via relay */
 void turnOnLight() {
-  Serial.println("Turning ON NeoPixel light");
- 
-  for(int i = 0; i < NEOPIXEL_COUNT; i++) {
-    lightRing.setPixelColor(i, lightRing.Color(255, 245, 235));
-  }
-  lightRing.show();
+  Serial.println("Turning ON LED light via relay");
+  Serial.print("Setting relay pin 16 to HIGH (relay ON)");
+  digitalWrite(lightRelay, HIGH);  // Relay on (LED on) - inverted logic for this circuit
   lightStatus = true;
+  Serial.println(" - LED should be ON now");
 }
 
-/* Turn on NeoPixel ring with breathing effect (optional) */
-void turnOnLightWithEffect() {
-  Serial.println("Turning ON NeoPixel light ring with breathing effect");
-  static int brightness = 50;
-  static int direction = 1;
-  
-  brightness += direction * 10;
-  if (brightness >= 255) {
-    brightness = 255;
-    direction = -1;
-  } else if (brightness <= 50) {
-    brightness = 50;
-    direction = 1;
-  }
-  
-  // Set all LEDs to warm white with varying brightness
-  for(int i = 0; i < NEOPIXEL_COUNT; i++) {
-    lightRing.setPixelColor(i, lightRing.Color(brightness, brightness * 0.7, brightness * 0.47));
-  }
-  lightRing.show();
-  lightStatus = true;
-}
-
-/* Turn off NeoPixel ring */
+/* Turn off LED light via relay */
 void turnOffLight() {
-  Serial.println("Turning OFF NeoPixel light");
-  // Turn off all LEDs
-  lightRing.clear();
-  lightRing.show();
+  Serial.println("Turning OFF LED light via relay");
+  Serial.print("Setting relay pin 16 to LOW (relay OFF)");
+  digitalWrite(lightRelay, LOW); // Relay off (LED off) - inverted logic for this circuit
   lightStatus = false;
+  Serial.println(" - LED should be OFF now");
 }
 
 /*
@@ -345,7 +317,7 @@ void autoLight(void *parameter) {
       // if (!lightStatus) {  // Only turn on if currently off
         Serial.print("Light level low (");
         Serial.print(lightValue);
-        Serial.println(") - turning ON NeoPixel light");
+        Serial.println(") - turning ON LED light");
         turnOnLight();
       // }
     }
@@ -354,7 +326,7 @@ void autoLight(void *parameter) {
       // if (lightStatus) {  // Only turn off if currently on
         Serial.print("Light level sufficient (");
         Serial.print(lightValue);
-        Serial.println(") - turning OFF NeoPixel light");
+        Serial.println(") - turning OFF LED light");
         turnOffLight();
       // }
     }
@@ -629,13 +601,12 @@ void setup() {
   
   Serial.println("Initializing ultrasonic timer...");
   ultrasonic.attach(1, ultrasonicDetect);
-  Serial.println("Ultrasonic timer initialized");  /* Defining pin modes and initializing servo and NeoPixel */  
+  Serial.println("Ultrasonic timer initialized");  /* Defining pin modes and initializing servo and relay */  
   fanServoMotor.attach(fanServo);  // Attach servo to pin 17
   Serial.println("Fan servo motor attached to pin 17");
   
-  lightRing.begin();  // Initialize NeoPixel ring
-  lightRing.show();   // Turn off all pixels initially
-  Serial.println("NeoPixel light ring initialized on pin 16");
+  pinMode(lightRelay, OUTPUT);     // Configure relay pin for LED control
+  Serial.println("Light relay configured on pin 16");
   
   pinMode(smokeLed, OUTPUT);
   pinMode(touchLed, OUTPUT);
@@ -649,8 +620,8 @@ void setup() {
   fanServoMotor.write(0);  // Set servo to 0° (fan off position)
   Serial.println("Fan servo set to OFF position (0°)");
   
-  turnOffLight();  // Turn off NeoPixel light initially
-  Serial.println("NeoPixel light initialized to OFF state");                            
+  turnOffLight();  // Turn off LED light initially
+  Serial.println("LED light initialized to OFF state");                            
   
   /* Buzzers off at start */
   digitalWrite(touchBuzzer, LOW);                            
@@ -694,8 +665,8 @@ void setup() {
   Serial.println("All tasks created");
     
   // vTaskSuspend (autoFan_handle);     // autoFan task disabled - fan control moved to tempRead task
-  // vTaskSuspend (autoLight_handle);   // Light control is now ACTIVE with NeoPixel
-  Serial.println("Auto LIGHT mode is ACTIVE with NeoPixel, Fan control integrated in temperature task");
+  // vTaskSuspend (autoLight_handle);   // Light control is now ACTIVE with relay
+  Serial.println("Auto LIGHT mode is ACTIVE with relay control, Fan control integrated in temperature task");
   Serial.println("Setup completed successfully!");
 }
 
@@ -703,5 +674,6 @@ void loop() {
   // Update servo sweep in main loop to ensure it's always running
   updateServoSweep();
   vTaskDelay(5 / portTICK_PERIOD_MS);  // Small delay to prevent overwhelming the system
+  
 }
 

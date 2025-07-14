@@ -49,7 +49,6 @@
       "left": -199.8,
       "attrs": { "volume": "0.1" }
     },
-    { "type": "wokwi-led", "id": "led1", "top": 6, "left": 176.6, "attrs": { "color": "red" } },
     {
       "type": "wokwi-servo",
       "id": "servo1",
@@ -58,12 +57,13 @@
       "rotate": 180,
       "attrs": { "horn": "cross", "hornColor": "black" }
     },
+    { "type": "wokwi-relay-module", "id": "relay1", "top": -124.6, "left": -278.4, "attrs": {} },
     {
-      "type": "wokwi-led-ring",
-      "id": "ring1",
-      "top": -277.76,
-      "left": 154.79,
-      "attrs": { "pixels": "16" }
+      "type": "wokwi-led-bar-graph",
+      "id": "bargraph1",
+      "top": -235.2,
+      "left": -52.8,
+      "attrs": { "color": "lime" }
     }
   ],
   "connections": [
@@ -88,14 +88,33 @@
     [ "ldr1:AO", "esp:26", "green", [ "h0" ] ],
     [ "bz1:2", "esp:14", "green", [ "v0" ] ],
     [ "bz1:1", "gnd1:GND", "black", [ "v0" ] ],
-    [ "led1:A", "esp:19", "green", [ "v0" ] ],
-    [ "led1:C", "esp:GND.3", "black", [ "v0" ] ],
     [ "servo1:GND", "gnd1:GND", "black", [ "h12.4", "v316", "h672" ] ],
     [ "servo1:V+", "vcc1:VCC", "green", [ "h22", "v306.3", "h604.8" ] ],
     [ "servo1:PWM", "esp:17", "green", [ "h70", "v143" ] ],
-    [ "ring1:GND", "gnd1:GND", "black", [ "v0" ] ],
-    [ "ring1:VCC", "vcc1:VCC", "red", [ "v0" ] ],
-    [ "ring1:DIN", "esp:16", "green", [ "v0" ] ]
+    [ "relay1:VCC", "vcc1:VCC", "red", [ "v153.6", "h556.6" ] ],
+    [ "relay1:GND", "gnd1:GND", "black", [ "h9.6", "v268.4" ] ],
+    [ "relay1:IN", "esp:16", "green", [ "h0" ] ],
+    [ "bargraph1:A1", "bargraph1:A2", "green", [ "h0" ] ],
+    [ "bargraph1:A2", "bargraph1:A3", "green", [ "h0" ] ],
+    [ "bargraph1:A3", "bargraph1:A4", "green", [ "h0" ] ],
+    [ "bargraph1:A4", "bargraph1:A5", "green", [ "h0" ] ],
+    [ "bargraph1:A5", "bargraph1:A6", "green", [ "h0" ] ],
+    [ "bargraph1:A6", "bargraph1:A7", "green", [ "h0" ] ],
+    [ "bargraph1:A7", "bargraph1:A8", "green", [ "h0" ] ],
+    [ "bargraph1:A8", "bargraph1:A9", "green", [ "h0" ] ],
+    [ "bargraph1:A9", "bargraph1:A10", "green", [ "h0" ] ],
+    [ "bargraph1:C1", "bargraph1:C2", "green", [ "v0" ] ],
+    [ "bargraph1:C2", "bargraph1:C3", "green", [ "h0" ] ],
+    [ "bargraph1:C3", "bargraph1:C4", "green", [ "h0" ] ],
+    [ "bargraph1:C4", "bargraph1:C5", "green", [ "h0" ] ],
+    [ "bargraph1:C5", "bargraph1:C6", "green", [ "h0" ] ],
+    [ "bargraph1:C6", "bargraph1:C7", "green", [ "h0" ] ],
+    [ "bargraph1:C7", "bargraph1:C8", "green", [ "h0" ] ],
+    [ "bargraph1:C8", "bargraph1:C9", "green", [ "h0" ] ],
+    [ "bargraph1:C9", "bargraph1:C10", "green", [ "h0" ] ],
+    [ "bargraph1:C10", "relay1:COM", "green", [ "h-143.78", "v47.99" ] ],
+    [ "bargraph1:A10", "vcc1:VCC", "green", [ "h0" ] ],
+    [ "relay1:NO", "gnd1:GND", "black", [ "h596.4", "v247.8" ] ]
   ],
   "dependencies": {}
 }
