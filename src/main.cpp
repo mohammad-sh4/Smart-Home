@@ -40,6 +40,9 @@
 #include <Adafruit_GFX.h>
 #include <Ticker.h>
 #include <ESP32Servo.h>  // Add servo library for ESP32
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
@@ -61,8 +64,8 @@ static const BaseType_t app_cpu = 1;
 /* Sensor pins */
 #define DHTPIN 33                 // DHT22 temperature sensor
 #define DHTTYPE DHT22
-#define lightSensor 26            // LDR sensor
-#define smokeSensor 25            // MQ2 smoke and gas sensor
+#define lightSensor 32            // LDR sensor (moved to ADC1 for WiFi compatibility)
+#define smokeSensor 34            // MQ2 smoke and gas sensor (moved to ADC1 for WiFi compatibility)
 #define touchButton 4             // Push button for touch simulation (GPIO 4)
 #define echo 2                    // Ultrasonic sensor echo pin
 #define trigger 15                // Ultrasonic sensor trigger pin         
@@ -85,12 +88,17 @@ static const BaseType_t app_cpu = 1;
 #define SCREEN_ADDRESS 0x3C       // i2c address for OLED display
 #define OLED_RESET -1             // No reset pin used
 
+/* WiFi credentials */
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
 /* Defining objects */
 DHT dht(DHTPIN, DHTTYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 BluetoothSerial SerialBT;                                 
 Ticker ultrasonic;
 Servo fanServoMotor;  // Servo object for fan simulation
+AsyncWebServer server(80);  // Web server on port 80
 
 /* Non-blocking servo sweep variables */
 unsigned long servoLastUpdate = 0;
@@ -117,6 +125,481 @@ bool lightStatus = false;
 bool smokeStatus = false;
 bool touchStatus = false;
 bool ultrasonicStatus = false;
+
+/* Web control variables */
+bool manualLightControl = false;
+bool manualFanControl = false;
+bool securitySystemEnabled = true;
+bool autoMode = true;
+
+/* Current sensor readings for web display */
+float currentTemperature = 0;
+int currentLightLevel = 0;
+int currentSmokeLevel = 0;
+int currentDistance = 0;
+
+/* Static variables for smoke detection to reduce stack usage */
+bool lastSmokeStatus = false;
+unsigned long lastSmokeLogTime = 0;
+
+/*
+* ---------------------------------------------------------------------------------------------------------------------------------
+* Beautiful Web Interface HTML
+* ---------------------------------------------------------------------------------------------------------------------------------
+*/
+
+const char* webPageHTML = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Home Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+        }
+        
+        .card-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .card-icon {
+            font-size: 2.5em;
+            margin-right: 15px;
+            width: 60px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 15px;
+            color: white;
+        }
+        
+        .temperature-icon { background: linear-gradient(45deg, #ff6b6b, #ee5a24); }
+        .light-icon { background: linear-gradient(45deg, #feca57, #ff9ff3); }
+        .security-icon { background: linear-gradient(45deg, #48dbfb, #0abde3); }
+        .fan-icon { background: linear-gradient(45deg, #1dd1a1, #10ac84); }
+        .smoke-icon { background: linear-gradient(45deg, #ff6348, #e17055); }
+        
+        .card-title {
+            font-size: 1.4em;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .sensor-value {
+            font-size: 2.2em;
+            font-weight: bold;
+            margin: 15px 0;
+            color: #2c3e50;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-on { background: #2ecc71; }
+        .status-off { background: #e74c3c; }
+        .status-warning { background: #f39c12; }
+        
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+            margin: 10px 0;
+        }
+        
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #ccc;
+            transition: 0.4s;
+            border-radius: 34px;
+        }
+        
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background: white;
+            transition: 0.4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .slider {
+            background: #2ecc71;
+        }
+        
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+        
+        .control-button {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 25px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 5px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+        
+        .control-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        .control-button:active {
+            transform: translateY(0);
+        }
+        
+        .emergency-button {
+            background: linear-gradient(45deg, #e74c3c, #c0392b);
+            font-size: 1.1em;
+            padding: 15px 30px;
+        }
+        
+        .mode-selector {
+            display: flex;
+            background: #ecf0f1;
+            border-radius: 25px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+        
+        .mode-option {
+            flex: 1;
+            padding: 12px 20px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+        
+        .mode-option.active {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+        }
+        
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 40px;
+            opacity: 0.8;
+        }
+        
+        @media (max-width: 768px) {
+            .header h1 { font-size: 2em; }
+            .dashboard { grid-template-columns: 1fr; }
+            .card { padding: 20px; }
+        }
+        
+        .refresh-icon {
+            animation: spin 2s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏠 Smart Home Control</h1>
+            <p>Intelligent Automation & Security System</p>
+        </div>
+        
+        <div class="dashboard">
+            <!-- Temperature Card -->
+            <div class="card" id="fanCard">
+                <div class="card-header">
+                    <div class="card-icon temperature-icon">🌡️</div>
+                    <div class="card-title">Temperature</div>
+                </div>
+                <div class="sensor-value" id="temperature">--°C</div>
+                <div>
+                    <span class="status-indicator" id="fanStatus"></span>
+                    <span id="fanStatusText">Fan Status</span>
+                </div>
+                <div class="mode-selector">
+                    <button class="mode-option active" onclick="setFanMode('auto')" id="fanAutoBtn">Auto</button>
+                    <button class="mode-option" onclick="setFanMode('manual')" id="fanManualBtn">Manual</button>
+                </div>
+                <button class="control-button" onclick="toggleFan()" id="fanButton">Toggle Fan</button>
+            </div>
+            
+            <!-- Light Card -->
+            <div class="card" id="lightCard">
+                <div class="card-header">
+                    <div class="card-icon light-icon">💡</div>
+                    <div class="card-title">Lighting</div>
+                </div>
+                <div class="sensor-value" id="lightLevel">-- lux</div>
+                <div>
+                    <span class="status-indicator" id="lightStatus"></span>
+                    <span id="lightStatusText">Light Status</span>
+                </div>
+                <div class="mode-selector">
+                    <button class="mode-option active" onclick="setLightMode('auto')" id="lightAutoBtn">Auto</button>
+                    <button class="mode-option" onclick="setLightMode('manual')" id="lightManualBtn">Manual</button>
+                </div>
+                <button class="control-button" onclick="toggleLight()" id="lightButton">Toggle Light</button>
+            </div>
+            
+            <!-- Security Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon security-icon">🔒</div>
+                    <div class="card-title">Security System</div>
+                </div>
+                <div>
+                    <span class="status-indicator" id="touchStatus"></span>
+                    <span id="touchStatusText">Intrusion Alert</span>
+                </div>
+                <div>
+                    <span class="status-indicator" id="systemStatus"></span>
+                    <span id="systemStatusText">System Armed</span>
+                </div>
+                <div style="margin: 15px 0;">
+                    <strong>Security Monitoring:</strong>
+                    <label class="toggle-switch" style="margin-left: 10px;">
+                        <input type="checkbox" id="securityToggle" onchange="toggleSecurity()" checked>
+                        <span class="slider"></span>
+                    </label>
+                    <span style="margin-left: 10px; font-size: 0.9em;">Enable/Disable intrusion detection</span>
+                </div>
+                <button class="control-button emergency-button" onclick="resetAlarms()">🚨 Reset All Alarms</button>
+            </div>
+            
+            <!-- Smoke Detection Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon smoke-icon">💨</div>
+                    <div class="card-title">Air Quality</div>
+                </div>
+                <div class="sensor-value" id="smokeLevel">-- ppm</div>
+                <div>
+                    <span class="status-indicator" id="smokeStatus"></span>
+                    <span id="smokeStatusText">Air Quality</span>
+                </div>
+                <div>
+                    <span class="status-indicator" id="distanceStatus"></span>
+                    <span>Motion: <span id="distance">-- cm</span></span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>🔄 Auto-refresh every 2 seconds | Last updated: <span id="lastUpdate">--</span></p>
+            <p>Mohammad's Smart Home System | ESP32 Based</p>
+        </div>
+    </div>
+
+    <script>
+        // Update data every 2 seconds
+        setInterval(updateData, 2000);
+        updateData(); // Initial load
+        
+        async function updateData() {
+            try {
+                const response = await fetch('/data');
+                const data = await response.json();
+                
+                // Update sensor values
+                document.getElementById('temperature').textContent = data.temperature + '°C';
+                document.getElementById('lightLevel').textContent = data.lightLevel + ' lux';
+                document.getElementById('smokeLevel').textContent = data.smokeLevel + ' ppm';
+                document.getElementById('distance').textContent = data.distance + ' cm';
+                
+                // Update status indicators
+                updateStatus('fanStatus', 'fanStatusText', data.fanStatus, 'Fan ');
+                updateStatus('lightStatus', 'lightStatusText', data.lightStatus, 'Light ');
+                updateStatus('touchStatus', 'touchStatusText', data.touchStatus, 'Touch ');
+                updateStatus('smokeStatus', 'smokeStatusText', data.smokeStatus, 'Air ');
+                updateStatus('distanceStatus', null, data.ultrasonicStatus, '');
+                updateStatus('systemStatus', 'systemStatusText', data.securityEnabled, 'Security ');
+                
+                // Update last refresh time
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+                
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            }
+        }
+        
+        function updateStatus(indicatorId, textId, status, prefix) {
+            const indicator = document.getElementById(indicatorId);
+            const text = textId ? document.getElementById(textId) : null;
+            
+            if (status) {
+                indicator.className = 'status-indicator status-on';
+                if (text) text.textContent = prefix + 'ON';
+            } else {
+                indicator.className = 'status-indicator status-off';
+                if (text) text.textContent = prefix + 'OFF';
+            }
+        }
+        
+        async function toggleFan() {
+            await fetch('/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'toggleFan'})
+            });
+            updateData();
+        }
+        
+        async function toggleLight() {
+            await fetch('/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'toggleLight'})
+            });
+            updateData();
+        }
+        
+        async function toggleSecurity() {
+            const enabled = document.getElementById('securityToggle').checked;
+            await fetch('/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'setSecurity', value: enabled})
+            });
+            updateData();
+        }
+        
+        async function resetAlarms() {
+            await fetch('/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'resetAlarms'})
+            });
+            updateData();
+        }
+        
+        async function setFanMode(mode) {
+            // Update button states
+            document.getElementById('fanAutoBtn').classList.remove('active');
+            document.getElementById('fanManualBtn').classList.remove('active');
+            if (mode === 'auto') {
+                document.getElementById('fanAutoBtn').classList.add('active');
+            } else {
+                document.getElementById('fanManualBtn').classList.add('active');
+            }
+            
+            await fetch('/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'setFanMode', value: mode})
+            });
+            updateData();
+        }
+        
+        async function setLightMode(mode) {
+            // Update button states
+            document.getElementById('lightAutoBtn').classList.remove('active');
+            document.getElementById('lightManualBtn').classList.remove('active');
+            if (mode === 'auto') {
+                document.getElementById('lightAutoBtn').classList.add('active');
+            } else {
+                document.getElementById('lightManualBtn').classList.add('active');
+            }
+            
+            await fetch('/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'setLightMode', value: mode})
+            });
+            updateData();
+        }
+    </script>
+</body>
+</html>
+)rawliteral";
+
+
 /*
 * ---------------------------------------------------------------------------------------------------------------------------------
 * Non-blocking servo sweep function
@@ -177,42 +660,38 @@ void tempRead(void *parameter) {
   
   while (true) {
     t = dht.readTemperature();
-    Serial.print("Raw DHT reading: ");
-    Serial.println(t);
     
     if (isnan(t)) {
       Serial.println(F("Failed to read from DHT sensor!"));
-      // Don't return, just continue trying
       vTaskDelay(2000 / portTICK_PERIOD_MS);
       continue;
     }    
-    /* Send temperature values via bluetooth */
-    // SerialBT.print("#");    // Commented out - Bluetooth disabled
-    // SerialBT.print(t);      // Commented out - Bluetooth disabled
-    // SerialBT.print("?");    // Commented out - Bluetooth disabled
-      /* Print temperature and humidity values on serial monitor */
+    
     Serial.print("Temperature: "); 
     Serial.print(t); 
     Serial.println(" °C");
-    Serial.println("Sending temperature to queue...");
+    currentTemperature = t;  // Store for web interface
     xQueueSend (tempReading, (void*)&t, 10);
     
-    // Non-blocking fan control based on temperature
-    if (t >= 33) {
-      if (servoState == SERVO_OFF) {
-        Serial.println("Temperature high - starting continuous fan sweep pattern");
-        servoState = SERVO_SWEEP_UP;
-        servoCurrentPos = 0;
-        fanStatus = true;
+    // Non-blocking fan control based on temperature (only in auto mode)
+    if (!manualFanControl) {
+      if (t >= 33) {
+        if (servoState == SERVO_OFF) {
+          Serial.println("Auto: Temperature high - starting fan");
+          servoState = SERVO_SWEEP_UP;
+          servoCurrentPos = 0;
+          fanStatus = true;
+        }
+      }
+      else if (t < 33) {
+        if (servoState != SERVO_OFF) {
+          Serial.println("Auto: Temperature normal - stopping fan");
+          servoState = SERVO_OFF;
+          fanStatus = false; 
+        }
       }
     }
-    else if (t < 33) {
-      if (servoState != SERVO_OFF) {
-        Serial.println("Temperature normal - stopping fan sweep");
-        servoState = SERVO_OFF;
-        fanStatus = false; 
-      }
-    }
+    // If in manual mode, don't change fan state automatically
     
     // Update servo position (non-blocking)
     updateServoSweep();
@@ -289,9 +768,7 @@ void lightRead(void *parameter) {
   
   while (true) {
     lightValue = analogRead(lightSensor); 
-    Serial.print("Light intensity: ");
-    Serial.println(lightValue);
-
+    currentLightLevel = lightValue;  // Store for web interface
     xQueueSend (lightReading, (void*)&lightValue, 10);
     
     // Update servo sweep to maintain smooth operation
@@ -307,29 +784,29 @@ void autoLight(void *parameter) {
   Serial.println("autoLight task started, waiting for light sensor data...");
   
   while (true) { 
-    Serial.println("autoLight: Waiting for light reading...");
     xQueueReceive(lightReading, (void *)&lightValue, portMAX_DELAY);    
-    Serial.print("autoLight: Received light value: ");
-    Serial.println(lightValue);
     
-    if (lightValue >= 2200) {
-      // SerialBT.print("Bulb on?");  // Bluetooth disabled
-      // if (!lightStatus) {  // Only turn on if currently off
-        Serial.print("Light level low (");
-        Serial.print(lightValue);
-        Serial.println(") - turning ON LED light");
-        turnOnLight();
-      // }
+    // Only control light automatically if NOT in manual mode
+    if (!manualLightControl) {
+      if (lightValue >= 2200) {
+        if (!lightStatus) {  // Only turn on if currently off
+          Serial.print("Auto: Light level low (");
+          Serial.print(lightValue);
+          Serial.println(") - turning ON LED light");
+          turnOnLight();
+        }
+      }
+      else if (lightValue < 2200) {
+        if (lightStatus) {  // Only turn off if currently on
+          Serial.print("Auto: Light level sufficient (");
+          Serial.print(lightValue);
+          Serial.println(") - turning OFF LED light");
+          turnOffLight();
+        }
+      }
     }
-    else if (lightValue < 2200) {
-      // SerialBT.print("Bulb off?");  // Bluetooth disabled
-      // if (lightStatus) {  // Only turn off if currently on
-        Serial.print("Light level sufficient (");
-        Serial.print(lightValue);
-        Serial.println(") - turning OFF LED light");
-        turnOffLight();
-      // }
-    }
+    // If in manual mode, don't change light state automatically
+    
     vTaskDelay(200 / portTICK_PERIOD_MS);
   } 
 }
@@ -346,22 +823,30 @@ void smokeDetect(void *parameter) {
   
   while (true) {
     smokeValue = analogRead(smokeSensor); 
-    Serial.print("Smoke: ");
-    Serial.println(smokeValue);
+    
+    currentSmokeLevel = smokeValue;  // Store for web interface
     
     if (smokeValue >= 3200) {
-      Serial.println("SMOKE DETECTED! Activating buzzer and LED");
-      // SerialBT.print("Smoke active?");  // Bluetooth disabled
+      if (!lastSmokeStatus || (millis() - lastSmokeLogTime > 10000)) {
+        Serial.print("SMOKE DETECTED! Level: ");
+        Serial.println(smokeValue);
+        lastSmokeLogTime = millis();
+      }
       digitalWrite(smokeLed, HIGH);
-      tone(smokeBuzzer, 2000);  // Try 2000Hz instead
+      tone(smokeBuzzer, 2000);
       smokeStatus = true;      
+      lastSmokeStatus = true;
     }
     else if (smokeValue < 3200) {
-      Serial.println("Smoke level normal, turning off buzzer and LED");
-      // SerialBT.print("Smoke inactive?");  // Bluetooth disabled
+      if (lastSmokeStatus || (millis() - lastSmokeLogTime > 10000)) {
+        Serial.print("Smoke level normal: ");
+        Serial.println(smokeValue);
+        lastSmokeLogTime = millis();
+      }
       digitalWrite(smokeLed, LOW);
-      noTone(smokeBuzzer);  // Turn off tone
+      noTone(smokeBuzzer);
       smokeStatus = false; 
+      lastSmokeStatus = false;
     }
     
     // Update servo sweep to maintain smooth operation
@@ -387,30 +872,38 @@ void touchDetect(void *parameter) {
     }
     
     if ((millis() - lastDebounceTime) > debounceDelay) {
-      // Button is pressed (LOW because of pull-up resistor)
-      if (buttonState == LOW && !touchStatus) {  // Only trigger if not already active
-        Serial.println("SECURITY ALERT! Touch detected - activating alarm");
-        digitalWrite(touchLed, HIGH);
-        tone(touchBuzzer, 1500);  // Use tone() for active buzzer, 1500Hz frequency
-        touchStatus = true;
-        Serial.println("Touch alarm is ACTIVE - needs manual reset via app/button");
-        
-        // In a real system, this would be reset via app/web interface
-        // For simulation, we'll reset after a longer period or via long press
-      }
-      // Long press (hold for 3+ seconds) to reset the alarm
-      else if (buttonState == LOW && touchStatus) {
-        unsigned long pressStart = millis();
-        while (digitalRead(touchButton) == LOW && (millis() - pressStart) < 3000) {
-          vTaskDelay(100 / portTICK_PERIOD_MS);
+      // Only trigger if security system is enabled
+      if (securitySystemEnabled) {
+        // Button is pressed (LOW because of pull-up resistor)
+        if (buttonState == LOW && !touchStatus) {  // Only trigger if not already active
+          Serial.println("SECURITY ALERT! Touch detected - activating alarm");
+          digitalWrite(touchLed, HIGH);
+          tone(touchBuzzer, 1500);  // Use tone() for active buzzer, 1500Hz frequency
+          touchStatus = true;
+          Serial.println("Touch alarm is ACTIVE - needs manual reset via app/button");
         }
-        
-        if ((millis() - pressStart) >= 3000) {
-          Serial.println("Long press detected - RESETTING touch alarm");
+        // Long press (hold for 3+ seconds) to reset the alarm
+        else if (buttonState == LOW && touchStatus) {
+          unsigned long pressStart = millis();
+          while (digitalRead(touchButton) == LOW && (millis() - pressStart) < 3000) {
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+          }
+          
+          if ((millis() - pressStart) >= 3000) {
+            Serial.println("Long press detected - RESETTING touch alarm");
+            digitalWrite(touchLed, LOW);
+            noTone(touchBuzzer);  // Turn off tone
+            touchStatus = false;
+            Serial.println("Touch alarm has been RESET");
+          }
+        }
+      } else {
+        // Security system disabled - ensure alarm is off
+        if (touchStatus) {
           digitalWrite(touchLed, LOW);
-          noTone(touchBuzzer);  // Turn off tone
+          noTone(touchBuzzer);
           touchStatus = false;
-          Serial.println("Touch alarm has been RESET");
+          Serial.println("Security system disabled - touch alarm deactivated");
         }
       }
     }
@@ -433,16 +926,22 @@ void ultrasonicDetect() {
 
   duration = pulseIn(echo, HIGH);
   distance = (duration / 2) * 0.0343;
+  
+  currentDistance = distance;  // Store for web interface
 
-  Serial.print("Distance: ");
-  Serial.println(distance);
+  // Reduced logging frequency
+  static unsigned long lastLogTime = 0;
+  if (millis() - lastLogTime > 5000) {  // Print every 5 seconds
+    Serial.print("Distance: ");
+    Serial.println(distance);
+    lastLogTime = millis();
+  }
+  
   if (distance > 20) {
-    // SerialBT.print("Ultrasonic inactive?");  // Bluetooth disabled
     digitalWrite(ultrasonicLed, LOW);
     ultrasonicStatus = false;
   }
   else if (distance <= 20) {
-    // SerialBT.print("Ultrasonic active?");  // Bluetooth disabled
     digitalWrite(ultrasonicLed, HIGH);
     ultrasonicStatus = true;
   }
@@ -467,29 +966,27 @@ void resetTouchAlarm() {
 
 /* Check and maintain security alarms */
 void securitySystemMaintenance() {
-  // In a real system, this would handle:
-  // - Web/app commands to reset alarms
-  // - Automatic timeout after X hours
-  // - Security log entries
-  
-  // For simulation: auto-reset touch alarm after 30 seconds for demo purposes
+  // Auto-reset touch alarm after 30 seconds for demo purposes
   static unsigned long touchAlarmStart = 0;
   static bool alarmTimerStarted = false;
   
-  if (touchStatus && !alarmTimerStarted) {
+  if (touchStatus && !alarmTimerStarted && securitySystemEnabled) {
     touchAlarmStart = millis();
     alarmTimerStarted = true;
-    Serial.println("Touch alarm timer started (30s auto-reset for demo)");
   }
   
   if (touchStatus && alarmTimerStarted && (millis() - touchAlarmStart) > 30000) {
-    Serial.println("Auto-resetting touch alarm after 30 seconds (demo mode)");
     resetTouchAlarm();
     alarmTimerStarted = false;
   }
   
   if (!touchStatus) {
     alarmTimerStarted = false;
+  }
+  
+  // If security system is disabled, ensure all alarms are off
+  if (!securitySystemEnabled && touchStatus) {
+    resetTouchAlarm();
   }
 }
 
@@ -501,18 +998,9 @@ void securitySystemMaintenance() {
 
 /* Task for controlling relays and alarms using app */
 void switchControl(void *parameter) {
-  Serial.println("switchControl task started - handling security system");
-  
   while (true) {
     // Handle security system maintenance
     securitySystemMaintenance();
-    
-    // In a real system, this would also handle:
-    // - Bluetooth/WiFi commands from mobile app
-    // - Web interface commands
-    // - Manual override switches
-    // - Scheduled operations
-    
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
@@ -731,35 +1219,193 @@ void setup() {
   tempReading = xQueueCreate(10, sizeof(int));
   lightReading = xQueueCreate(10, sizeof(int));
   Serial.println("Queues created");
-    /* Creating tasks */  Serial.println("Creating FreeRTOS tasks...");
-  xTaskCreatePinnedToCore (tempRead, "Temp read", 1024, NULL, 1, NULL, app_cpu);
-  Serial.println("Created tempRead task");
-  
-  // xTaskCreatePinnedToCore (autoFan, "Auto fan", 1024, NULL, 1, &autoFan_handle, app_cpu);
-  // Serial.println("Created autoFan task - DISABLED, fan control moved to tempRead task");
-  
-  xTaskCreatePinnedToCore (lightRead, "Light read", 1024, NULL, 1, NULL, app_cpu);
-  Serial.println("Created lightRead task");
-  
-  xTaskCreatePinnedToCore (autoLight, "Auto light", 1024, NULL, 1, &autoLight_handle, app_cpu);
-  Serial.println("Created autoLight task");
-  
-  xTaskCreatePinnedToCore (smokeDetect, "Smoke detect", 1024, NULL, 1, NULL, app_cpu);
-  Serial.println("Created smokeDetect task");
-  
-  xTaskCreatePinnedToCore (touchDetect, "Touch read", 1024, NULL, 1, NULL, app_cpu);
-  Serial.println("Created touchDetect task");
-  
+    /* Creating tasks */  
+  Serial.println("Creating FreeRTOS tasks...");
+  xTaskCreatePinnedToCore (tempRead, "Temp read", 2048, NULL, 1, NULL, app_cpu);
+  xTaskCreatePinnedToCore (lightRead, "Light read", 2048, NULL, 1, NULL, app_cpu);
+  xTaskCreatePinnedToCore (autoLight, "Auto light", 2048, NULL, 1, &autoLight_handle, app_cpu);
+  xTaskCreatePinnedToCore (smokeDetect, "Smoke detect", 2048, NULL, 1, NULL, app_cpu);
+  xTaskCreatePinnedToCore (touchDetect, "Touch read", 2048, NULL, 1, NULL, app_cpu);
   xTaskCreatePinnedToCore (switchControl, "Switch control", 2048, NULL, 1, NULL, app_cpu);
-  Serial.println("Created switchControl task");
-  
   xTaskCreatePinnedToCore (indicatorDisplay, "OLED display", 2048, NULL, 1, NULL, app_cpu);
-  Serial.println("Created indicatorDisplay task");
-  Serial.println("All tasks created");
+  Serial.println("All tasks created successfully");
     
-  // vTaskSuspend (autoFan_handle);     // autoFan task disabled - fan control moved to tempRead task
-  // vTaskSuspend (autoLight_handle);   // Light control is now ACTIVE with relay
-  Serial.println("Auto LIGHT mode is ACTIVE with relay control, Fan control integrated in temperature task");
+  Serial.println("✓ Smart home automation system ready!");
+  Serial.println("✓ Temperature control: AUTO mode (fan starts at 33°C)");
+  Serial.println("✓ Light control: AUTO mode (light on when dark)");
+  Serial.println("✓ Security system: ENABLED (intrusion detection active)");
+  
+  /* Initialize WiFi and Web Server */
+  Serial.println("Setting up WiFi and Web Server...");
+  
+  // Scan for available networks first
+  Serial.println("Scanning for WiFi networks...");
+  int networkCount = WiFi.scanNetworks();
+  if (networkCount == 0) {
+    Serial.println("No networks found!");
+  } else {
+    Serial.print("Found ");
+    Serial.print(networkCount);
+    Serial.println(" networks:");
+    for (int i = 0; i < networkCount; i++) {
+      Serial.print("  ");
+      Serial.print(i + 1);
+      Serial.print(": ");
+      Serial.print(WiFi.SSID(i));
+      Serial.print(" (");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print(" dBm) ");
+      Serial.println(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "Open" : "Encrypted");
+    }
+  }
+  
+  // WiFi setup with improved connection logic
+  Serial.println("Connecting to WiFi...");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  
+  WiFi.mode(WIFI_STA);  // Set WiFi to station mode
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {  // Increased timeout to 15 seconds
+    delay(500);
+    Serial.print(".");
+    attempts++;
+    
+    // Print connection status every 5 attempts
+    if (attempts % 5 == 0) {
+      Serial.println();
+      Serial.print("Connection attempt ");
+      Serial.print(attempts);
+      Serial.print("/30, Status: ");
+      switch(WiFi.status()) {
+        case WL_IDLE_STATUS: Serial.println("WL_IDLE_STATUS"); break;
+        case WL_NO_SSID_AVAIL: Serial.println("WL_NO_SSID_AVAIL - Network not found"); break;
+        case WL_SCAN_COMPLETED: Serial.println("WL_SCAN_COMPLETED"); break;
+        case WL_CONNECTED: Serial.println("WL_CONNECTED"); break;
+        case WL_CONNECT_FAILED: Serial.println("WL_CONNECT_FAILED - Wrong password?"); break;
+        case WL_CONNECTION_LOST: Serial.println("WL_CONNECTION_LOST"); break;
+        case WL_DISCONNECTED: Serial.println("WL_DISCONNECTED"); break;
+        default: Serial.println("Unknown status"); break;
+      }
+    }
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("");
+    Serial.println("WiFi connected successfully!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.println("Access your Smart Home at: http://" + WiFi.localIP().toString());
+    
+    // Setup web server routes
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send(200, "text/html", webPageHTML);
+    });
+    
+    // API endpoint for sensor data
+    server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request){
+      JsonDocument doc;
+      
+      doc["temperature"] = currentTemperature;
+      doc["lightLevel"] = currentLightLevel;
+      doc["smokeLevel"] = currentSmokeLevel;
+      doc["distance"] = currentDistance;
+      doc["fanStatus"] = fanStatus;
+      doc["lightStatus"] = lightStatus;
+      doc["touchStatus"] = touchStatus;
+      doc["smokeStatus"] = smokeStatus;
+      doc["ultrasonicStatus"] = ultrasonicStatus;
+      doc["securityEnabled"] = securitySystemEnabled;
+      doc["autoMode"] = autoMode;
+      
+      String response;
+      serializeJson(doc, response);
+      request->send(200, "application/json", response);
+    });
+    
+    // API endpoint for controls
+    server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request){
+      request->send(200, "application/json", "{\"status\":\"received\"}");
+    }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+      JsonDocument doc;
+      deserializeJson(doc, (char*)data);
+      
+      String action = doc["action"];
+      
+      if (action == "toggleFan") {
+        if (manualFanControl) {
+          // Toggle manual fan control
+          if (servoState == SERVO_OFF) {
+            servoState = SERVO_SWEEP_UP;
+            fanStatus = true;
+            Serial.println("Web: Manual fan turned ON");
+          } else {
+            servoState = SERVO_OFF;
+            fanStatus = false;
+            Serial.println("Web: Manual fan turned OFF");
+          }
+        }
+      }
+      else if (action == "toggleLight") {
+        if (manualLightControl) {
+          // Toggle manual light control
+          if (lightStatus) {
+            turnOffLight();
+            Serial.println("Web: Manual light turned OFF");
+          } else {
+            turnOnLight();
+            Serial.println("Web: Manual light turned ON");
+          }
+        }
+      }
+      else if (action == "setSecurity") {
+        securitySystemEnabled = doc["value"];
+        Serial.println("Web: Security system " + String(securitySystemEnabled ? "ENABLED" : "DISABLED"));
+      }
+      else if (action == "resetAlarms") {
+        resetTouchAlarm();
+        // Reset smoke alarm if needed
+        if (smokeStatus) {
+          digitalWrite(smokeLed, LOW);
+          noTone(smokeBuzzer);
+          smokeStatus = false;
+          Serial.println("Web: All alarms reset");
+        }
+      }
+      else if (action == "setFanMode") {
+        String mode = doc["value"];
+        if (mode == "auto") {
+          manualFanControl = false;
+          autoMode = true;
+          Serial.println("Web: Fan set to AUTO mode");
+        } else {
+          manualFanControl = true;
+          autoMode = false;
+          Serial.println("Web: Fan set to MANUAL mode");
+        }
+      }
+      else if (action == "setLightMode") {
+        String mode = doc["value"];
+        if (mode == "auto") {
+          manualLightControl = false;
+          Serial.println("Web: Light set to AUTO mode");
+        } else {
+          manualLightControl = true;
+          Serial.println("Web: Light set to MANUAL mode");
+        }
+      }
+    });
+    
+    server.begin();
+    Serial.println("Web server started successfully!");
+    Serial.println("Web interface ready!");
+  } else {
+    Serial.println("");
+    Serial.println("WiFi connection failed! Starting in offline mode.");
+  }
+  
   Serial.println("Setup completed successfully!");
 }
 
