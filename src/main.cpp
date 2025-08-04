@@ -1043,9 +1043,24 @@ void turnOffLight() {
 /* Task for light intensity sensing using LDR */
 void lightRead(void *parameter) {
   int lightValue;
+  int lightReadings[5] = {0}; // Array for moving average
+  int readIndex = 0;
   
   while (true) {
-    lightValue = analogRead(lightSensor); 
+    // Take multiple readings for stability
+    int rawReading = analogRead(lightSensor);
+    
+    // Store reading in circular buffer for moving average
+    lightReadings[readIndex] = rawReading;
+    readIndex = (readIndex + 1) % 5;
+    
+    // Calculate moving average of last 5 readings
+    int sum = 0;
+    for (int i = 0; i < 5; i++) {
+      sum += lightReadings[i];
+    }
+    lightValue = sum / 5;
+    
     currentLightLevel = lightValue;  // Store for web interface
     xQueueSend (lightReading, (void*)&lightValue, 10);
     
@@ -1098,13 +1113,28 @@ void autoLight(void *parameter) {
 /* Task for detecting smoke or gas using MQ2 sensor */
 void smokeDetect(void *parameter) {
   int smokeValue;
+  int smokeReadings[3] = {0}; // Array for moving average (smaller for faster response)
+  int readIndex = 0;
   
   while (true) {
-    smokeValue = analogRead(smokeSensor); 
+    // Take raw reading
+    int rawReading = analogRead(smokeSensor);
+    
+    // Store reading in circular buffer for moving average
+    smokeReadings[readIndex] = rawReading;
+    readIndex = (readIndex + 1) % 3;
+    
+    // Calculate moving average of last 3 readings
+    int sum = 0;
+    for (int i = 0; i < 3; i++) {
+      sum += smokeReadings[i];
+    }
+    smokeValue = sum / 3;
     
     currentSmokeLevel = smokeValue;  // Store for web interface
     
-    if (smokeValue >= 3200) {
+    // Multi-level gas detection with hysteresis
+    if (smokeValue >= 3200) {  // High danger level
       if (!lastSmokeStatus || (millis() - lastSmokeLogTime > 10000)) {
         Serial.print("SMOKE DETECTED! Level: ");
         Serial.println(smokeValue);
@@ -1115,7 +1145,7 @@ void smokeDetect(void *parameter) {
       smokeStatus = true;      
       lastSmokeStatus = true;
     }
-    else if (smokeValue < 3200) {
+    else if (smokeValue < 3000) {  // Use hysteresis (lower threshold for turning off)
       if (lastSmokeStatus || (millis() - lastSmokeLogTime > 10000)) {
         Serial.print("Smoke level normal: ");
         Serial.println(smokeValue);
@@ -1126,6 +1156,7 @@ void smokeDetect(void *parameter) {
       smokeStatus = false; 
       lastSmokeStatus = false;
     }
+    // Between 3000-3200 = maintain current state (hysteresis zone)
     
     // Update servo sweep to maintain smooth operation
     updateServoSweep();
