@@ -100,6 +100,11 @@ Ticker ultrasonic;
 Servo fanServoMotor;  // Servo object for fan simulation
 AsyncWebServer server(80);  // Web server on port 80
 
+/* Mobile app support variables */
+String lastVoiceCommand = "";
+unsigned long lastCommandTime = 0;
+bool voiceControlEnabled = true;
+
 /* Non-blocking servo sweep variables */
 unsigned long servoLastUpdate = 0;
 int servoCurrentPos = 0;
@@ -1685,26 +1690,246 @@ void setup() {
       }
       else if (action == "setFanMode") {
         String mode = doc["value"];
+        Serial.println("Received setFanMode command with value: " + mode);
         if (mode == "auto") {
           manualFanControl = false;
           autoMode = true;
-          Serial.println("Web: Fan set to AUTO mode");
+          Serial.println("Web: Fan set to AUTO mode - manualFanControl=false, autoMode=true");
         } else {
           manualFanControl = true;
           autoMode = false;
-          Serial.println("Web: Fan set to MANUAL mode");
+          Serial.println("Web: Fan set to MANUAL mode - manualFanControl=true, autoMode=false");
         }
       }
       else if (action == "setLightMode") {
         String mode = doc["value"];
+        Serial.println("Received setLightMode command with value: " + mode);
         if (mode == "auto") {
           manualLightControl = false;
-          Serial.println("Web: Light set to AUTO mode");
+          Serial.println("Web: Light set to AUTO mode - manualLightControl=false");
         } else {
           manualLightControl = true;
-          Serial.println("Web: Light set to MANUAL mode");
+          Serial.println("Web: Light set to MANUAL mode - manualLightControl=true");
         }
       }
+    });
+    
+    // Mobile app specific endpoints
+    
+    // Voice command endpoint
+    server.on("/voice", HTTP_POST, [](AsyncWebServerRequest *request){
+      request->send(200, "application/json", "{\"status\":\"processed\"}");
+    }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+      JsonDocument doc;
+      deserializeJson(doc, (char*)data);
+      
+      String command = doc["command"];
+      lastVoiceCommand = command;
+      lastCommandTime = millis();
+      
+      Serial.println("Voice Command Received: " + command);
+      
+      // Process voice commands
+      command.toLowerCase();
+      
+      JsonDocument response;
+      response["status"] = "success";
+      response["command"] = lastVoiceCommand;
+      
+      if (command.indexOf("turn on light") >= 0 || command.indexOf("light on") >= 0) {
+        if (!manualLightControl) {
+          manualLightControl = true;
+          Serial.println("Voice: Switched to manual light control");
+        }
+        turnOnLight();
+        response["action"] = "Light turned on";
+        Serial.println("Voice: Light turned ON");
+      }
+      else if (command.indexOf("turn off light") >= 0 || command.indexOf("light off") >= 0) {
+        if (!manualLightControl) {
+          manualLightControl = true;
+          Serial.println("Voice: Switched to manual light control");
+        }
+        turnOffLight();
+        response["action"] = "Light turned off";
+        Serial.println("Voice: Light turned OFF");
+      }
+      else if (command.indexOf("turn on fan") >= 0 || command.indexOf("fan on") >= 0) {
+        if (!manualFanControl) {
+          manualFanControl = true;
+          Serial.println("Voice: Switched to manual fan control");
+        }
+        servoState = SERVO_SWEEP_UP;
+        fanStatus = true;
+        response["action"] = "Fan turned on";
+        Serial.println("Voice: Fan turned ON");
+      }
+      else if (command.indexOf("turn off fan") >= 0 || command.indexOf("fan off") >= 0) {
+        if (!manualFanControl) {
+          manualFanControl = true;
+          Serial.println("Voice: Switched to manual fan control");
+        }
+        servoState = SERVO_OFF;
+        fanStatus = false;
+        response["action"] = "Fan turned off";
+        Serial.println("Voice: Fan turned OFF");
+      }
+      else if (command.indexOf("enable security") >= 0 || command.indexOf("arm security") >= 0) {
+        securitySystemEnabled = true;
+        response["action"] = "Security system enabled";
+        Serial.println("Voice: Security system ENABLED");
+      }
+      else if (command.indexOf("disable security") >= 0 || command.indexOf("disarm security") >= 0) {
+        securitySystemEnabled = false;
+        response["action"] = "Security system disabled";
+        Serial.println("Voice: Security system DISABLED");
+      }
+      else if (command.indexOf("reset alarm") >= 0 || command.indexOf("stop alarm") >= 0) {
+        resetTouchAlarm();
+        if (smokeStatus) {
+          digitalWrite(smokeLed, LOW);
+          noTone(smokeBuzzer);
+          smokeStatus = false;
+        }
+        response["action"] = "All alarms reset";
+        Serial.println("Voice: All alarms reset");
+      }
+      else if (command.indexOf("auto mode") >= 0 || command.indexOf("automatic mode") >= 0) {
+        manualFanControl = false;
+        manualLightControl = false;
+        autoMode = true;
+        response["action"] = "Switched to automatic mode";
+        Serial.println("Voice: Switched to AUTO mode");
+      }
+      else if (command.indexOf("manual mode") >= 0) {
+        manualFanControl = true;
+        manualLightControl = true;
+        autoMode = false;
+        response["action"] = "Switched to manual mode";
+        Serial.println("Voice: Switched to MANUAL mode");
+      }
+      else if (command.indexOf("status") >= 0 || command.indexOf("report") >= 0) {
+        response["action"] = "Current status: Temperature " + String(currentTemperature) + "°C, Light " + String(currentLightLevel) + " lux, Smoke " + String(currentSmokeLevel) + " ppm";
+        Serial.println("Voice: Status requested");
+      }
+      else {
+        response["status"] = "unknown";
+        response["action"] = "Command not recognized. Try: turn on/off light, turn on/off fan, enable/disable security, reset alarm, auto/manual mode, status";
+        Serial.println("Voice: Unknown command - " + command);
+      }
+      
+      String responseStr;
+      serializeJson(response, responseStr);
+      
+      // Note: We can't send response here as this is the body callback
+      // The main request handler already sent a response
+    });
+    
+    // Mobile app status endpoint (more detailed than web version)
+    server.on("/mobile/status", HTTP_GET, [](AsyncWebServerRequest *request){
+      JsonDocument doc;
+      
+      // Sensor data
+      doc["sensors"]["temperature"] = currentTemperature;
+      doc["sensors"]["lightLevel"] = currentLightLevel;
+      doc["sensors"]["smokeLevel"] = currentSmokeLevel;
+      doc["sensors"]["distance"] = currentDistance;
+      
+      // Device states
+      doc["devices"]["fan"]["status"] = fanStatus;
+      doc["devices"]["fan"]["mode"] = manualFanControl ? "manual" : "auto";
+      doc["devices"]["light"]["status"] = lightStatus;
+      doc["devices"]["light"]["mode"] = manualLightControl ? "manual" : "auto";
+      
+      // Security system
+      doc["security"]["enabled"] = securitySystemEnabled;
+      doc["security"]["touchAlert"] = touchStatus;
+      doc["security"]["smokeAlert"] = smokeStatus;
+      doc["security"]["motionDetected"] = ultrasonicStatus;
+      
+      // System info
+      doc["system"]["autoMode"] = autoMode;
+      doc["system"]["voiceEnabled"] = voiceControlEnabled;
+      doc["system"]["uptime"] = millis();
+      doc["system"]["lastVoiceCommand"] = lastVoiceCommand;
+      doc["system"]["lastCommandTime"] = lastCommandTime;
+      
+      // Debug print for mobile status
+      Serial.println("Mobile status requested:");
+      Serial.println("  Fan: " + String(fanStatus ? "ON" : "OFF") + " (" + String(manualFanControl ? "manual" : "auto") + ")");
+      Serial.println("  Light: " + String(lightStatus ? "ON" : "OFF") + " (" + String(manualLightControl ? "manual" : "auto") + ")");
+      Serial.println("  Security: " + String(securitySystemEnabled ? "ENABLED" : "DISABLED"));
+      
+      // Smart suggestions
+      JsonArray suggestions = doc.createNestedArray("suggestions");
+      if (currentTemperature > 30 && !fanStatus) {
+        suggestions.add("Consider turning on the fan - temperature is high");
+      }
+      if (currentLightLevel > 2500 && lightStatus) {
+        suggestions.add("Natural light is sufficient - you can turn off the light");
+      }
+      if (currentSmokeLevel > 2000) {
+        suggestions.add("Air quality is getting poor - check ventilation");
+      }
+      
+      String response;
+      serializeJson(doc, response);
+      request->send(200, "application/json", response);
+    });
+    
+    // Quick control endpoints for mobile
+    server.on("/mobile/light/toggle", HTTP_POST, [](AsyncWebServerRequest *request){
+      if (!manualLightControl) manualLightControl = true;
+      
+      if (lightStatus) {
+        turnOffLight();
+      } else {
+        turnOnLight();
+      }
+      
+      JsonDocument doc;
+      doc["status"] = "success";
+      doc["lightStatus"] = lightStatus;
+      doc["action"] = lightStatus ? "turned on" : "turned off";
+      
+      String response;
+      serializeJson(doc, response);
+      request->send(200, "application/json", response);
+    });
+    
+    server.on("/mobile/fan/toggle", HTTP_POST, [](AsyncWebServerRequest *request){
+      if (!manualFanControl) manualFanControl = true;
+      
+      if (servoState == SERVO_OFF) {
+        servoState = SERVO_SWEEP_UP;
+        fanStatus = true;
+      } else {
+        servoState = SERVO_OFF;
+        fanStatus = false;
+      }
+      
+      JsonDocument doc;
+      doc["status"] = "success";
+      doc["fanStatus"] = fanStatus;
+      doc["action"] = fanStatus ? "turned on" : "turned off";
+      
+      String response;
+      serializeJson(doc, response);
+      request->send(200, "application/json", response);
+    });
+    
+    server.on("/mobile/security/toggle", HTTP_POST, [](AsyncWebServerRequest *request){
+      securitySystemEnabled = !securitySystemEnabled;
+      Serial.println("Security system toggled to: " + String(securitySystemEnabled ? "ENABLED" : "DISABLED"));
+      
+      JsonDocument doc;
+      doc["status"] = "success";
+      doc["securityEnabled"] = securitySystemEnabled;
+      doc["action"] = securitySystemEnabled ? "enabled" : "disabled";
+      
+      String response;
+      serializeJson(doc, response);
+      request->send(200, "application/json", response);
     });
     
     server.begin();
