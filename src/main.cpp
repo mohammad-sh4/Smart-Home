@@ -143,9 +143,91 @@ int currentLightLevel = 0;
 int currentSmokeLevel = 0;
 int currentDistance = 0;
 
+/* Pre-computed display values to reduce HTML complexity */
+String temperatureClass = "temp-normal";
+String temperatureIcon = "🌡️";
+String lightIcon = "💡";
+String fanIcon = "🌀";
+String smokeIcon = "🌿";
+String motionIcon = "👁️";
+String securityIcon = "🔒";
+
 /* Static variables for smoke detection to reduce stack usage */
 bool lastSmokeStatus = false;
 unsigned long lastSmokeLogTime = 0;
+
+/*
+* ---------------------------------------------------------------------------------------------------------------------------------
+* Helper functions for pre-computing display values
+* ---------------------------------------------------------------------------------------------------------------------------------
+*/
+
+void updateTemperatureDisplay(float temp) {
+  if (temp <= 0) {
+    temperatureClass = "temp-freezing";
+    temperatureIcon = "🥶";
+  } else if (temp <= 10) {
+    temperatureClass = "temp-cold";
+    temperatureIcon = "❄️";
+  } else if (temp <= 20) {
+    temperatureClass = "temp-cool";
+    temperatureIcon = "🌡️";
+  } else if (temp <= 30) {
+    temperatureClass = "temp-normal";
+    temperatureIcon = "😌";
+  } else if (temp <= 40) {
+    temperatureClass = "temp-warm";
+    temperatureIcon = "🌡️";
+  } else if (temp <= 50) {
+    temperatureClass = "temp-hot";
+    temperatureIcon = "🔥";
+  } else {
+    temperatureClass = "temp-extreme";
+    temperatureIcon = "🌋";
+  }
+}
+
+void updateFanDisplay(bool status) {
+  if (status) {
+    fanIcon = "🌪️";
+  } else {
+    fanIcon = "🌀";
+  }
+}
+
+void updateLightDisplay(bool status) {
+  if (status) {
+    lightIcon = "💡";
+  } else {
+    lightIcon = "🔦";
+  }
+}
+
+void updateSmokeDisplay(bool status, int level) {
+  if (status) {
+    smokeIcon = "🚨";
+  } else if (level > 2000) {
+    smokeIcon = "💨";
+  } else {
+    smokeIcon = "🌿";
+  }
+}
+
+void updateMotionDisplay(bool detected) {
+  if (detected) {
+    motionIcon = "👀";
+  } else {
+    motionIcon = "👁️";
+  }
+}
+
+void updateSecurityDisplay(bool enabled) {
+  if (enabled) {
+    securityIcon = "🔒";
+  } else {
+    securityIcon = "🔓";
+  }
+}
 
 /*
 * ---------------------------------------------------------------------------------------------------------------------------------
@@ -155,376 +237,439 @@ unsigned long lastSmokeLogTime = 0;
 
 const char* webPageHTML = R"rawliteral(
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart Home Control</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        * { 
+            margin: 0; 
+            padding: 0; 
+            box-sizing: border-box; 
+        }
+        
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --secondary: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #22c55e;
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-card: rgba(30, 41, 59, 0.8);
+            --text-primary: #f8fafc;
+            --text-secondary: #cbd5e1;
+            --border: rgba(148, 163, 184, 0.1);
+            --shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            --shadow-lg: 0 35px 60px -12px rgba(0, 0, 0, 0.35);
         }
         
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
             min-height: 100vh;
-            color: #333;
+            color: var(--text-primary);
+            overflow-x: hidden;
+            position: relative;
         }
         
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
+        /* Animated background particles */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 80%, rgba(99, 102, 241, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(16, 185, 129, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 40% 40%, rgba(239, 68, 68, 0.05) 0%, transparent 50%);
+            animation: float 20s ease-in-out infinite;
+            pointer-events: none;
+            z-index: 0;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            33% { transform: translateY(-20px) rotate(1deg); }
+            66% { transform: translateY(10px) rotate(-1deg); }
+        }
+        
+        .container { 
+            max-width: 1400px; 
+            margin: 0 auto; 
+            padding: 2rem;
+            position: relative;
+            z-index: 1;
         }
         
         .header {
             text-align: center;
-            color: white;
-            margin-bottom: 30px;
+            margin-bottom: 3rem;
+            padding: 2.5rem;
+            background: linear-gradient(135deg, 
+                rgba(99, 102, 241, 0.1) 0%, 
+                rgba(16, 185, 129, 0.1) 100%);
+            border-radius: 24px;
+            border: 1px solid var(--border);
+            backdrop-filter: blur(20px);
+            position: relative;
+            overflow: hidden;
         }
         
-        .header h1 {
-            font-size: 3em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, 
+                transparent, 
+                rgba(255, 255, 255, 0.05), 
+                transparent);
+            animation: shine 3s infinite;
         }
         
-        .header p {
-            font-size: 1.2em;
-            opacity: 0.9;
+        @keyframes shine {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+        
+        .header h1 { 
+            font-size: 3.5rem; 
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #6366f1, #10b981, #f59e0b);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            position: relative;
+        }
+        
+        .header p { 
+            font-size: 1.25rem; 
+            color: var(--text-secondary);
+            font-weight: 400;
         }
         
         .dashboard {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 2rem;
+            margin-bottom: 3rem;
         }
         
         .card {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
+            background: var(--bg-card);
             border-radius: 20px;
-            padding: 25px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            padding: 2rem;
+            border: 1px solid var(--border);
+            backdrop-filter: blur(20px);
+            box-shadow: var(--shadow);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            transform: scaleX(0);
+            transition: transform 0.4s ease;
+            transform-origin: left;
         }
         
         .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+            transform: translateY(-8px) scale(1.02);
+            box-shadow: var(--shadow-lg);
+            border-color: rgba(99, 102, 241, 0.3);
         }
         
-        .card-header {
-            display: flex;
-            align-items: center;
-            margin-bottom: 20px;
+        .card:hover::before {
+            transform: scaleX(1);
+        }
+        
+        .card-header { 
+            display: flex; 
+            align-items: center; 
+            margin-bottom: 1.5rem; 
         }
         
         .card-icon {
-            font-size: 2.5em;
-            margin-right: 15px;
+            font-size: 2.5rem;
+            margin-right: 1rem;
             width: 60px;
             height: 60px;
             display: flex;
             align-items: center;
             justify-content: center;
-            border-radius: 15px;
-            color: white;
+            border-radius: 16px;
+            position: relative;
+            transition: all 0.3s ease;
         }
         
-        .temperature-icon { background: linear-gradient(45deg, #ff6b6b, #ee5a24); }
-        .light-icon { background: linear-gradient(45deg, #feca57, #ff9ff3); }
-        .security-icon { background: linear-gradient(45deg, #48dbfb, #0abde3); }
-        .fan-icon { background: linear-gradient(45deg, #1dd1a1, #10ac84); }
-        .smoke-icon { background: linear-gradient(45deg, #ff6348, #e17055); }
+        .card-icon::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 16px;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
         
-        .card-title {
-            font-size: 1.4em;
-            font-weight: 600;
-            color: #2c3e50;
+        .card:hover .card-icon::after {
+            opacity: 1;
+        }
+        
+        .temperature-icon { 
+            background: linear-gradient(135deg, #ef4444, #f97316);
+            box-shadow: 0 8px 25px rgba(239, 68, 68, 0.3);
+        }
+        .light-icon { 
+            background: linear-gradient(135deg, #f59e0b, #eab308);
+            box-shadow: 0 8px 25px rgba(245, 158, 11, 0.3);
+        }
+        .security-icon { 
+            background: linear-gradient(135deg, #3b82f6, #6366f1);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+        }
+        .smoke-icon { 
+            background: linear-gradient(135deg, #8b5cf6, #a855f7);
+            box-shadow: 0 8px 25px rgba(139, 92, 246, 0.3);
+        }
+        .motion-icon { 
+            background: linear-gradient(135deg, #10b981, #059669);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.3);
+        }
+        
+        .card-title { 
+            font-size: 1.5rem; 
+            font-weight: 600; 
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
         }
         
         .sensor-value {
-            font-size: 2.2em;
-            font-weight: bold;
-            margin: 15px 0;
-            color: #2c3e50;
+            font-size: 2.75rem;
+            font-weight: 700;
+            margin: 1.5rem 0;
+            color: var(--text-primary);
+            text-align: center;
+            padding: 1.5rem;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(16, 185, 129, 0.1));
+            border-radius: 16px;
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .sensor-value::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            animation: shimmer 3s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+        
+        .status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 1rem 0;
+            padding: 0.75rem;
+            background: rgba(15, 23, 42, 0.3);
+            border-radius: 12px;
+            border: 1px solid var(--border);
         }
         
         .status-indicator {
-            display: inline-block;
             width: 12px;
             height: 12px;
             border-radius: 50%;
-            margin-right: 8px;
-        }
-        
-        .status-on { background: #2ecc71; }
-        .status-off { background: #e74c3c; }
-        .status-warning { background: #f39c12; }
-        
-        .toggle-switch {
+            margin-right: 0.75rem;
             position: relative;
-            display: inline-block;
-            width: 60px;
-            height: 34px;
-            margin: 10px 0;
+            transition: all 0.3s ease;
         }
         
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        
-        .slider {
+        .status-indicator::after {
+            content: '';
             position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: #ccc;
-            transition: 0.4s;
-            border-radius: 34px;
-        }
-        
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 26px;
-            width: 26px;
-            left: 4px;
-            bottom: 4px;
-            background: white;
-            transition: 0.4s;
+            inset: -4px;
             border-radius: 50%;
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
         
-        input:checked + .slider {
-            background: #2ecc71;
+        .status-on { 
+            background: var(--success);
+            box-shadow: 0 0 20px rgba(34, 197, 94, 0.4);
         }
         
-        input:checked + .slider:before {
-            transform: translateX(26px);
+        .status-on::after {
+            background: rgba(34, 197, 94, 0.2);
+            animation: pulse 2s infinite;
+        }
+        
+        .status-off { 
+            background: var(--danger);
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
         }
         
         .control-button {
-            background: linear-gradient(45deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
             color: white;
             border: none;
-            padding: 12px 25px;
-            border-radius: 25px;
-            font-size: 1em;
+            padding: 0.875rem 1.5rem;
+            border-radius: 12px;
+            font-size: 0.95rem;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
-            margin: 5px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            margin: 0.25rem;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .control-button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.5s ease;
         }
         
         .control-button:hover {
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4);
+        }
+        
+        .control-button:hover::before {
+            left: 100%;
         }
         
         .control-button:active {
             transform: translateY(0);
         }
         
-        .emergency-button {
-            background: linear-gradient(45deg, #e74c3c, #c0392b);
-            font-size: 1.1em;
-            padding: 15px 30px;
-        }
-        
         .mode-selector {
             display: flex;
-            background: #ecf0f1;
-            border-radius: 25px;
+            background: rgba(15, 23, 42, 0.4);
+            border-radius: 12px;
             overflow: hidden;
-            margin: 15px 0;
+            margin: 1rem 0;
+            border: 1px solid var(--border);
         }
         
         .mode-option {
             flex: 1;
-            padding: 12px 20px;
+            padding: 0.75rem 1rem;
             background: transparent;
             border: none;
             cursor: pointer;
             transition: all 0.3s ease;
-            font-weight: 600;
+            font-weight: 500;
+            color: var(--text-secondary);
+            position: relative;
         }
         
         .mode-option.active {
-            background: linear-gradient(45deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
             color: white;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+        }
+        
+        .mode-option:not(.active):hover {
+            background: rgba(99, 102, 241, 0.1);
+            color: var(--text-primary);
         }
         
         .footer {
             text-align: center;
-            color: white;
-            margin-top: 40px;
-            opacity: 0.8;
+            margin-top: 4rem;
+            padding: 2rem;
+            background: var(--bg-card);
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            backdrop-filter: blur(20px);
         }
         
+        .footer p {
+            margin: 0.5rem 0;
+            color: var(--text-secondary);
+        }
+        
+        .footer .highlight {
+            color: var(--primary);
+            font-weight: 600;
+        }
+        
+        /* Responsive design */
         @media (max-width: 768px) {
-            .header h1 { font-size: 2em; }
-            .dashboard { grid-template-columns: 1fr; }
-            .card { padding: 20px; }
+            .container { padding: 1rem; }
+            .header h1 { font-size: 2.5rem; }
+            .header p { font-size: 1rem; }
+            .dashboard { grid-template-columns: 1fr; gap: 1.5rem; }
+            .card { padding: 1.5rem; }
+            .sensor-value { font-size: 2.25rem; }
         }
         
-        .refresh-icon {
-            animation: spin 2s linear infinite;
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
         }
         
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 4px;
         }
         
-        /* Fan animation */
-        @keyframes fanRotate {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        ::-webkit-scrollbar-thumb {
+            background: var(--primary);
+            border-radius: 4px;
         }
         
-        .fan-spinning {
-            animation: fanRotate 0.5s linear infinite;
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary-dark);
         }
         
-        /* Light bulb effects */
-        .bulb-on {
-            color: #f1c40f;
-            text-shadow: 0 0 20px #f1c40f, 0 0 30px #f1c40f, 0 0 40px #f1c40f;
-            animation: lightGlow 2s ease-in-out infinite alternate;
+        /* Loading animation for data updates */
+        .loading {
+            animation: loading 1s ease-in-out infinite alternate;
         }
         
-        .bulb-off {
-            color: #7f8c8d;
-            text-shadow: none;
-        }
-        
-        @keyframes lightGlow {
-            from { text-shadow: 0 0 20px #f1c40f, 0 0 30px #f1c40f, 0 0 40px #f1c40f; }
-            to { text-shadow: 0 0 10px #f1c40f, 0 0 20px #f1c40f, 0 0 30px #f1c40f; }
-        }
-        
-        /* Temperature color effects */
-        .temp-freezing { background: linear-gradient(45deg, #74b9ff, #0984e3); }
-        .temp-cold { background: linear-gradient(45deg, #00b894, #00cec9); }
-        .temp-cool { background: linear-gradient(45deg, #6c5ce7, #a29bfe); }
-        .temp-normal { background: linear-gradient(45deg, #00b894, #55a3ff); }
-        .temp-warm { background: linear-gradient(45deg, #fdcb6e, #f39c12); }
-        .temp-hot { background: linear-gradient(45deg, #e17055, #d63031); }
-        .temp-extreme { background: linear-gradient(45deg, #d63031, #74b9ff); animation: tempPulse 1s ease-in-out infinite alternate; }
-        
-        @keyframes tempPulse {
-            from { transform: scale(1); }
-            to { transform: scale(1.05); }
-        }
-        
-        /* Snow effect for freezing */
-        .temp-freezing::before {
-            content: '❄️';
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            font-size: 1.5em;
-            animation: snowFall 3s ease-in-out infinite;
-        }
-        
-        @keyframes snowFall {
-            0%, 100% { transform: translateY(0px) rotate(0deg); }
-            50% { transform: translateY(10px) rotate(180deg); }
-        }
-        
-        /* Fire effect for hot temperatures */
-        .temp-hot::before, .temp-extreme::before {
-            content: '🔥';
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            font-size: 1.5em;
-            animation: fireFlicker 1s ease-in-out infinite alternate;
-        }
-        
-        @keyframes fireFlicker {
-            0% { transform: scale(1) rotate(-2deg); }
-            100% { transform: scale(1.1) rotate(2deg); }
-        }
-        
-        /* Smoke detector animation */
-        .smoke-detected {
-            animation: smokeAlert 0.5s ease-in-out infinite alternate;
-        }
-        
-        @keyframes smokeAlert {
-            from { background: linear-gradient(45deg, #e74c3c, #c0392b); }
-            to { background: linear-gradient(45deg, #c0392b, #e74c3c); }
-        }
-        
-        /* Security alert animation */
-        .security-alert {
-            animation: securityBlink 0.3s ease-in-out infinite alternate;
-        }
-        
-        @keyframes securityBlink {
-            from { background: linear-gradient(45deg, #e74c3c, #c0392b); }
-            to { background: linear-gradient(45deg, #c0392b, #e74c3c); }
-        }
-        
-        /* Motion detection animation */
-        .motion-detected {
-            animation: motionPulse 1s ease-in-out infinite alternate;
-        }
-        
-        @keyframes motionPulse {
-            from { transform: scale(1); }
-            to { transform: scale(1.1); }
-        }
-        
-        /* Hover effects for better interactivity */
-        .sensor-value:hover {
-            transform: scale(1.05);
-            transition: transform 0.3s ease;
-        }
-        
-        .card-icon:hover {
-            transform: scale(1.2);
-            transition: transform 0.3s ease;
-        }
-        
-        /* Status indicator improvements */
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
-            transition: all 0.3s ease;
-        }
-        
-        .status-on { 
-            background: #2ecc71; 
-            box-shadow: 0 0 10px rgba(46, 204, 113, 0.5);
-        }
-        .status-off { 
-            background: #e74c3c; 
-        }
-        .status-warning { 
-            background: #f39c12; 
-            animation: warningBlink 1s ease-in-out infinite alternate;
-        }
-        
-        @keyframes warningBlink {
-            from { opacity: 0.7; }
-            to { opacity: 1; }
+        @keyframes loading {
+            0% { opacity: 0.7; }
+            100% { opacity: 1; }
         }
     </style>
 </head>
@@ -532,276 +677,171 @@ const char* webPageHTML = R"rawliteral(
     <div class="container">
         <div class="header">
             <h1>🏠 Smart Home Control</h1>
-            <p>Intelligent Automation & Security System</p>
+            <p>Advanced IoT Automation & Security System</p>
         </div>
         
         <div class="dashboard">
-            <!-- Temperature Card -->
-            <div class="card" id="fanCard">
+            <div class="card">
                 <div class="card-header">
                     <div class="card-icon temperature-icon" id="tempIcon">🌡️</div>
-                    <div class="card-title">Temperature</div>
+                    <div>
+                        <div class="card-title">Temperature Control</div>
+                        <div style="color: var(--text-secondary); font-size: 0.9rem;">Climate Management</div>
+                    </div>
                 </div>
                 <div class="sensor-value" id="temperature">--°C</div>
-                <div>
-                    <span class="status-indicator" id="fanStatus"></span>
-                    <span id="fanStatusText">Fan Status</span>
-                    <span id="fanIcon" style="margin-left: 10px; font-size: 1.5em;">🌀</span>
+                <div class="status-row">
+                    <div style="display: flex; align-items: center;">
+                        <span class="status-indicator" id="fanStatus"></span>
+                        <span>Fan Status</span>
+                    </div>
+                    <span id="fanIcon" style="font-size: 1.5rem;">🌀</span>
                 </div>
                 <div class="mode-selector">
                     <button class="mode-option active" onclick="setFanMode('auto')" id="fanAutoBtn">Auto</button>
                     <button class="mode-option" onclick="setFanMode('manual')" id="fanManualBtn">Manual</button>
                 </div>
-                <button class="control-button" onclick="toggleFan()" id="fanButton">Toggle Fan</button>
+                <button class="control-button" onclick="toggleFan()">Toggle Fan</button>
             </div>
             
-            <!-- Light Card -->
-            <div class="card" id="lightCard">
+            <div class="card">
                 <div class="card-header">
                     <div class="card-icon light-icon" id="lightIcon">💡</div>
-                    <div class="card-title">Lighting</div>
+                    <div>
+                        <div class="card-title">Smart Lighting</div>
+                        <div style="color: var(--text-secondary); font-size: 0.9rem;">Ambient Control</div>
+                    </div>
                 </div>
                 <div class="sensor-value" id="lightLevel">-- lux</div>
-                <div>
-                    <span class="status-indicator" id="lightStatus"></span>
-                    <span id="lightStatusText">Light Status</span>
-                    <span id="bulbIcon" style="margin-left: 10px; font-size: 1.5em;">💡</span>
+                <div class="status-row">
+                    <div style="display: flex; align-items: center;">
+                        <span class="status-indicator" id="lightStatus"></span>
+                        <span>Light Status</span>
+                    </div>
+                    <span id="bulbIcon" style="font-size: 1.5rem;">💡</span>
                 </div>
                 <div class="mode-selector">
                     <button class="mode-option active" onclick="setLightMode('auto')" id="lightAutoBtn">Auto</button>
                     <button class="mode-option" onclick="setLightMode('manual')" id="lightManualBtn">Manual</button>
                 </div>
-                <button class="control-button" onclick="toggleLight()" id="lightButton">Toggle Light</button>
+                <button class="control-button" onclick="toggleLight()">Toggle Light</button>
             </div>
             
-            <!-- Security Card -->
-            <div class="card" id="securityCard">
+            <div class="card">
                 <div class="card-header">
-                    <div class="card-icon security-icon" id="securityIcon">🔒</div>
-                    <div class="card-title">Security System</div>
+                    <div class="card-icon security-icon">🔒</div>
+                    <div>
+                        <div class="card-title">Security System</div>
+                        <div style="color: var(--text-secondary); font-size: 0.9rem;">Intrusion Detection</div>
+                    </div>
                 </div>
-                <div>
-                    <span class="status-indicator" id="touchStatus"></span>
-                    <span id="touchStatusText">Intrusion Alert</span>
-                    <span id="alertIcon" style="margin-left: 10px; font-size: 1.5em;">🚨</span>
+                <div class="status-row">
+                    <div style="display: flex; align-items: center;">
+                        <span class="status-indicator" id="touchStatus"></span>
+                        <span>Intrusion Alert</span>
+                    </div>
+                    <span style="font-size: 1.5rem;">🚨</span>
                 </div>
-                <div>
-                    <span class="status-indicator" id="systemStatus"></span>
-                    <span id="systemStatusText">System Armed</span>
+                <div class="status-row">
+                    <div style="display: flex; align-items: center;">
+                        <span class="status-indicator status-on"></span>
+                        <span>System Armed</span>
+                    </div>
+                    <span style="font-size: 1.5rem;">🛡️</span>
                 </div>
-                <div style="margin: 15px 0;">
-                    <strong>Security Monitoring:</strong>
-                    <label class="toggle-switch" style="margin-left: 10px;">
-                        <input type="checkbox" id="securityToggle" onchange="toggleSecurity()" checked>
-                        <span class="slider"></span>
-                    </label>
-                    <span style="margin-left: 10px; font-size: 0.9em;">Enable/Disable intrusion detection</span>
-                </div>
-                <button class="control-button emergency-button" onclick="resetAlarms()">🚨 Reset All Alarms</button>
+                <button class="control-button" onclick="resetAlarms()" style="background: linear-gradient(135deg, var(--danger), #dc2626);">Reset Alarms</button>
             </div>
             
-            <!-- Smoke Detection Card -->
-            <div class="card" id="smokeCard">
+            <div class="card">
                 <div class="card-header">
-                    <div class="card-icon smoke-icon" id="smokeIcon">💨</div>
-                    <div class="card-title">Air Quality</div>
+                    <div class="card-icon smoke-icon" id="smokeIcon">🌿</div>
+                    <div>
+                        <div class="card-title">Air Quality</div>
+                        <div style="color: var(--text-secondary); font-size: 0.9rem;">Gas Detection</div>
+                    </div>
                 </div>
                 <div class="sensor-value" id="smokeLevel">-- ppm</div>
-                <div>
-                    <span class="status-indicator" id="smokeStatus"></span>
-                    <span id="smokeStatusText">Air Quality</span>
+                <div class="status-row">
+                    <div style="display: flex; align-items: center;">
+                        <span class="status-indicator" id="smokeStatus"></span>
+                        <span>Gas Level</span>
+                    </div>
+                    <span style="font-size: 1.5rem;">🌬️</span>
                 </div>
-                <div>
-                    <span class="status-indicator" id="distanceStatus"></span>
-                    <span>Motion: <span id="distance">-- cm</span></span>
-                    <span id="motionIcon" style="margin-left: 10px; font-size: 1.5em;">👁️</span>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon motion-icon" id="motionIcon">👁️</div>
+                    <div>
+                        <div class="card-title">Motion Detection</div>
+                        <div style="color: var(--text-secondary); font-size: 0.9rem;">Front Door Sensor</div>
+                    </div>
+                </div>
+                <div class="sensor-value" id="distance">-- cm</div>
+                <div class="status-row">
+                    <div style="display: flex; align-items: center;">
+                        <span class="status-indicator" id="distanceStatus"></span>
+                        <span>Motion Detection</span>
+                    </div>
+                    <span style="font-size: 1.5rem;">👀</span>
                 </div>
             </div>
         </div>
         
         <div class="footer">
-            <p>🔄 Auto-refresh every 2 seconds | Last updated: <span id="lastUpdate">--</span></p>
-            <p>🏠 Mohammad's Smart Home System | 🔧 ESP32 Based | 🌐 Real-time Monitoring</p>
-            <p style="font-size: 0.9em; opacity: 0.8;">💡 Interactive UI with dynamic visual effects</p>
+            <p>🔄 Real-time monitoring • Last updated: <span id="lastUpdate" class="highlight">--</span></p>
+            <p>🏠 <span class="highlight">Mohammad's Smart Home</span> • 🔧 ESP32 IoT Platform • 🌐 Advanced Web Interface</p>
+            <p style="font-size: 0.9rem; opacity: 0.8;">💡 Ultra-modern UI with optimized performance</p>
         </div>
     </div>
 
     <script>
-        // Update data every 2 seconds
         setInterval(updateData, 2000);
-        updateData(); // Initial load
-        
-        function getTemperatureClass(temp) {
-            if (temp <= 0) return 'temp-freezing';
-            if (temp <= 10) return 'temp-cold';
-            if (temp <= 20) return 'temp-cool';
-            if (temp <= 30) return 'temp-normal';
-            if (temp <= 40) return 'temp-warm';
-            if (temp <= 50) return 'temp-hot';
-            return 'temp-extreme';
-        }
-        
-        function getTemperatureIcon(temp) {
-            if (temp <= 0) return '🥶';
-            if (temp <= 10) return '❄️';
-            if (temp <= 20) return '🌡️';
-            if (temp <= 30) return '😌';
-            if (temp <= 40) return '🌡️';
-            if (temp <= 50) return '🔥';
-            return '🌋';
-        }
-        
-        function updateTemperatureVisuals(temp) {
-            const tempIcon = document.getElementById('tempIcon');
-            const fanCard = document.getElementById('fanCard');
-            
-            // Remove all temperature classes
-            fanCard.className = fanCard.className.replace(/temp-\w+/g, '');
-            
-            // Add new temperature class
-            const tempClass = getTemperatureClass(temp);
-            fanCard.classList.add(tempClass);
-            
-            // Update temperature icon
-            tempIcon.textContent = getTemperatureIcon(temp);
-            
-            // Update card position style for better visual feedback
-            if (temp > 50) {
-                fanCard.style.position = 'relative';
-            }
-        }
-        
-        function updateFanVisuals(fanStatus) {
-            const fanIcon = document.getElementById('fanIcon');
-            
-            if (fanStatus) {
-                fanIcon.classList.add('fan-spinning');
-                fanIcon.textContent = '🌪️';
-            } else {
-                fanIcon.classList.remove('fan-spinning');
-                fanIcon.textContent = '🌀';
-            }
-        }
-        
-        function updateLightVisuals(lightStatus) {
-            const bulbIcon = document.getElementById('bulbIcon');
-            const lightIcon = document.getElementById('lightIcon');
-            
-            if (lightStatus) {
-                bulbIcon.classList.add('bulb-on');
-                bulbIcon.classList.remove('bulb-off');
-                lightIcon.classList.add('bulb-on');
-                lightIcon.classList.remove('bulb-off');
-                bulbIcon.textContent = '💡';
-                lightIcon.textContent = '💡';
-            } else {
-                bulbIcon.classList.add('bulb-off');
-                bulbIcon.classList.remove('bulb-on');
-                lightIcon.classList.add('bulb-off');
-                lightIcon.classList.remove('bulb-on');
-                bulbIcon.textContent = '🔦';
-                lightIcon.textContent = '🔦';
-            }
-        }
-        
-        function updateSmokeVisuals(smokeStatus, smokeLevel) {
-            const smokeCard = document.getElementById('smokeCard');
-            const smokeIcon = document.getElementById('smokeIcon');
-            
-            if (smokeStatus) {
-                smokeCard.classList.add('smoke-detected');
-                smokeIcon.textContent = '🚨';
-            } else {
-                smokeCard.classList.remove('smoke-detected');
-                if (smokeLevel > 2000) {
-                    smokeIcon.textContent = '💨';
-                } else {
-                    smokeIcon.textContent = '🌿';
-                }
-            }
-        }
-        
-        function updateMotionVisuals(motionDetected, distance) {
-            const motionIcon = document.getElementById('motionIcon');
-            const distanceStatus = document.getElementById('distanceStatus');
-            
-            if (motionDetected) {
-                motionIcon.classList.add('motion-detected');
-                motionIcon.textContent = '👀';
-                distanceStatus.classList.add('status-on');
-                distanceStatus.classList.remove('status-off');
-            } else {
-                motionIcon.classList.remove('motion-detected');
-                motionIcon.textContent = '👁️';
-                distanceStatus.classList.add('status-off');
-                distanceStatus.classList.remove('status-on');
-            }
-        }
-        
-        function updateSecurityVisuals(touchStatus, securityEnabled) {
-            const securityCard = document.getElementById('securityCard');
-            const securityIcon = document.getElementById('securityIcon');
-            const alertIcon = document.getElementById('alertIcon');
-            
-            if (touchStatus) {
-                securityCard.classList.add('security-alert');
-                alertIcon.textContent = '🚨';
-            } else {
-                securityCard.classList.remove('security-alert');
-                alertIcon.textContent = '🔕';
-            }
-            
-            if (securityEnabled) {
-                securityIcon.textContent = '🔒';
-            } else {
-                securityIcon.textContent = '🔓';
-            }
-        }
+        updateData();
         
         async function updateData() {
             try {
                 const response = await fetch('/data');
                 const data = await response.json();
                 
-                // Update sensor values
+                // Update sensor values with loading animation
+                const elements = ['temperature', 'lightLevel', 'smokeLevel', 'distance'];
+                elements.forEach(id => {
+                    const element = document.getElementById(id);
+                    element.classList.add('loading');
+                    setTimeout(() => element.classList.remove('loading'), 300);
+                });
+                
                 document.getElementById('temperature').textContent = data.temperature + '°C';
                 document.getElementById('lightLevel').textContent = data.lightLevel + ' lux';
                 document.getElementById('smokeLevel').textContent = data.smokeLevel + ' ppm';
                 document.getElementById('distance').textContent = data.distance + ' cm';
                 
-                // Update visual effects
-                updateTemperatureVisuals(data.temperature);
-                updateFanVisuals(data.fanStatus);
-                updateLightVisuals(data.lightStatus);
-                updateSmokeVisuals(data.smokeStatus, data.smokeLevel);
-                updateMotionVisuals(data.ultrasonicStatus, data.distance);
-                updateSecurityVisuals(data.touchStatus, data.securityEnabled);
+                // Use pre-computed values from ESP32
+                document.getElementById('tempIcon').textContent = data.tempIcon;
+                document.getElementById('fanIcon').textContent = data.fanIcon;
+                document.getElementById('lightIcon').textContent = data.lightIcon;
+                document.getElementById('bulbIcon').textContent = data.lightIcon;
+                document.getElementById('smokeIcon').textContent = data.smokeIcon;
+                document.getElementById('motionIcon').textContent = data.motionIcon;
                 
-                // Update status indicators
-                updateStatus('fanStatus', 'fanStatusText', data.fanStatus, 'Fan ');
-                updateStatus('lightStatus', 'lightStatusText', data.lightStatus, 'Light ');
-                updateStatus('touchStatus', 'touchStatusText', data.touchStatus, 'Alert ');
-                updateStatus('smokeStatus', 'smokeStatusText', data.smokeStatus, 'Air ');
-                updateStatus('systemStatus', 'systemStatusText', data.securityEnabled, 'Security ');
+                updateStatus('fanStatus', data.fanStatus);
+                updateStatus('lightStatus', data.lightStatus);
+                updateStatus('touchStatus', data.touchStatus);
+                updateStatus('smokeStatus', data.smokeStatus);
+                updateStatus('distanceStatus', data.ultrasonicStatus);
                 
-                // Update last refresh time
                 document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
-                
             } catch (error) {
-                console.error('Error fetching data:', error);
+                console.error('Error:', error);
             }
         }
         
-        function updateStatus(indicatorId, textId, status, prefix) {
-            const indicator = document.getElementById(indicatorId);
-            const text = textId ? document.getElementById(textId) : null;
-            
-            if (status) {
-                indicator.className = 'status-indicator status-on';
-                if (text) text.textContent = prefix + 'ON';
-            } else {
-                indicator.className = 'status-indicator status-off';
-                if (text) text.textContent = prefix + 'OFF';
+        function updateStatus(id, status) {
+            const indicator = document.getElementById(id);
+            if (indicator) {
+                indicator.className = status ? 'status-indicator status-on' : 'status-indicator status-off';
             }
         }
         
@@ -823,16 +863,6 @@ const char* webPageHTML = R"rawliteral(
             updateData();
         }
         
-        async function toggleSecurity() {
-            const enabled = document.getElementById('securityToggle').checked;
-            await fetch('/control', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({action: 'setSecurity', value: enabled})
-            });
-            updateData();
-        }
-        
         async function resetAlarms() {
             await fetch('/control', {
                 method: 'POST',
@@ -843,14 +873,9 @@ const char* webPageHTML = R"rawliteral(
         }
         
         async function setFanMode(mode) {
-            // Update button states
             document.getElementById('fanAutoBtn').classList.remove('active');
             document.getElementById('fanManualBtn').classList.remove('active');
-            if (mode === 'auto') {
-                document.getElementById('fanAutoBtn').classList.add('active');
-            } else {
-                document.getElementById('fanManualBtn').classList.add('active');
-            }
+            document.getElementById('fan' + mode.charAt(0).toUpperCase() + mode.slice(1) + 'Btn').classList.add('active');
             
             await fetch('/control', {
                 method: 'POST',
@@ -861,14 +886,9 @@ const char* webPageHTML = R"rawliteral(
         }
         
         async function setLightMode(mode) {
-            // Update button states
             document.getElementById('lightAutoBtn').classList.remove('active');
             document.getElementById('lightManualBtn').classList.remove('active');
-            if (mode === 'auto') {
-                document.getElementById('lightAutoBtn').classList.add('active');
-            } else {
-                document.getElementById('lightManualBtn').classList.add('active');
-            }
+            document.getElementById('light' + mode.charAt(0).toUpperCase() + mode.slice(1) + 'Btn').classList.add('active');
             
             await fetch('/control', {
                 method: 'POST',
@@ -954,6 +974,7 @@ void tempRead(void *parameter) {
     Serial.print(t); 
     Serial.println(" °C");
     currentTemperature = t;  // Store for web interface
+    updateTemperatureDisplay(t);  // Pre-compute display values
     xQueueSend (tempReading, (void*)&t, 10);
     
     // Non-blocking fan control based on temperature (only in auto mode)
@@ -1003,12 +1024,14 @@ void autoFan(void *parameter) {
         servoCurrentPos = 0;
       }
       fanStatus = true;
+      updateFanDisplay(true);
     }
     else if (tempValue < 33) {
       // SerialBT.print ("Fan off?");  // Bluetooth disabled
       Serial.println("Temperature normal - stopping fan sweep");
       servoState = SERVO_OFF;
       fanStatus = false; 
+      updateFanDisplay(false);
     }
     
     vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -1027,6 +1050,7 @@ void turnOnLight() {
   Serial.print("Setting relay pin 16 to HIGH (relay ON)");
   digitalWrite(lightRelay, HIGH);  // Relay on (LED on) - inverted logic for this circuit
   lightStatus = true;
+  updateLightDisplay(true);
   Serial.println(" - LED should be ON now");
 }
 
@@ -1036,6 +1060,7 @@ void turnOffLight() {
   Serial.print("Setting relay pin 16 to LOW (relay OFF)");
   digitalWrite(lightRelay, LOW); // Relay off (LED off) - inverted logic for this circuit
   lightStatus = false;
+  updateLightDisplay(false);
   Serial.println(" - LED should be OFF now");
 }
 
@@ -1137,6 +1162,7 @@ void smokeDetect(void *parameter) {
     smokeValue = sum / 3;
     
     currentSmokeLevel = smokeValue;  // Store for web interface
+    updateSmokeDisplay(smokeStatus, smokeValue);  // Pre-compute display values
     
     // Multi-level gas detection with hysteresis
     if (smokeValue >= 3200) {  // High danger level
@@ -1242,6 +1268,7 @@ void ultrasonicDetect() {
   distance = (duration / 2) * 0.0343;
   
   currentDistance = distance;  // Store for web interface
+  updateMotionDisplay(distance <= 20);  // Pre-compute display values
 
   // Reduced logging frequency
   static unsigned long lastLogTime = 0;
@@ -1634,6 +1661,14 @@ void setup() {
       doc["securityEnabled"] = securitySystemEnabled;
       doc["autoMode"] = autoMode;
       
+      // Pre-computed display values to reduce JavaScript complexity
+      doc["tempIcon"] = temperatureIcon;
+      doc["fanIcon"] = fanIcon;
+      doc["lightIcon"] = lightIcon;
+      doc["smokeIcon"] = smokeIcon;
+      doc["motionIcon"] = motionIcon;
+      doc["securityIcon"] = securityIcon;
+      
       String response;
       serializeJson(doc, response);
       request->send(200, "application/json", response);
@@ -1861,7 +1896,7 @@ void setup() {
       Serial.println("  Security: " + String(securitySystemEnabled ? "ENABLED" : "DISABLED"));
       
       // Smart suggestions
-      JsonArray suggestions = doc.createNestedArray("suggestions");
+      JsonArray suggestions = doc["suggestions"].to<JsonArray>();
       if (currentTemperature > 30 && !fanStatus) {
         suggestions.add("Consider turning on the fan - temperature is high");
       }
@@ -1869,7 +1904,7 @@ void setup() {
         suggestions.add("Natural light is sufficient - you can turn off the light");
       }
       if (currentSmokeLevel > 2000) {
-        suggestions.add("Air quality is getting poor - check ventilation");
+        suggestions.add("Gas levels are elevated - check ventilation and safety");
       }
       
       String response;
@@ -1939,6 +1974,14 @@ void setup() {
     Serial.println("");
     Serial.println("WiFi connection failed! Starting in offline mode.");
   }
+  
+  // Initialize display values
+  updateTemperatureDisplay(currentTemperature);
+  updateFanDisplay(fanStatus);
+  updateLightDisplay(lightStatus);
+  updateSmokeDisplay(smokeStatus, currentSmokeLevel);
+  updateMotionDisplay(ultrasonicStatus);
+  updateSecurityDisplay(securitySystemEnabled);
   
   Serial.println("Setup completed successfully!");
 }
