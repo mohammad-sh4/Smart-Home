@@ -1,6 +1,4 @@
 
-
-#include "BluetoothSerial.h"
 #include <Wire.h>
 #include "DHT.h"
 #include <Adafruit_SSD1306.h>
@@ -13,13 +11,7 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
-#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
-#endif
-
-#if !defined(CONFIG_BT_SPP_ENABLED)
-#error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
-#endif
+#
 
 /* Using core 1 of ESP32 */
 #if CONFIG_FREERTOS_UNICORE
@@ -62,7 +54,6 @@ const char* password = "";
 /* Defining objects */
 DHT dht(DHTPIN, DHTTYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-BluetoothSerial SerialBT;                                 
 Ticker ultrasonic;
 Servo fanServoMotor;  // Servo object for fan simulation
 AsyncWebServer server(80);  // Web server on port 80
@@ -106,9 +97,13 @@ bool autoMode = true;
 
 /* Current sensor readings for web display */
 float currentTemperature = 0;
-int currentLightLevel = 0;
+float currentLightLevel = 0.0;  // Float for lux values with 2 decimal precision
 int currentSmokeLevel = 0;
 int currentDistance = 0;
+
+/* LDR Characteristics for lux calculation */
+const float GAMMA = 0.7;
+const float RL10 = 50;
 
 /* Pre-computed display values to reduce HTML complexity */
 String temperatureClass = "temp-normal";
@@ -272,7 +267,7 @@ void updateSecurityDisplay(bool enabled) {
 
 /*
 * ---------------------------------------------------------------------------------------------------------------------------------
-* Beautiful Web Interface HTML
+* Web Interface HTML
 * ---------------------------------------------------------------------------------------------------------------------------------
 */
 
@@ -855,7 +850,7 @@ const char* webPageHTML = R"rawliteral(
                 });
                 
                 document.getElementById('temperature').textContent = data.temperature + '°C';
-                document.getElementById('lightLevel').textContent = data.lightLevel + ' lux';
+                document.getElementById('lightLevel').textContent = parseFloat(data.lightLevel).toFixed(2) + ' lux';
                 document.getElementById('smokeLevel').textContent = data.smokeLevel + ' ppm';
                 document.getElementById('distance').textContent = data.distance + ' cm';
                 
@@ -1058,7 +1053,6 @@ void autoFan(void *parameter) {
     Serial.println("°C");
     
     if (tempValue >= 33) {
-      // SerialBT.print ("Fan on?");  // Bluetooth disabled
       Serial.println("Temperature high - starting continuous fan sweep");
       if (servoState == SERVO_OFF) {
         servoState = SERVO_SWEEP_UP;
@@ -1068,7 +1062,6 @@ void autoFan(void *parameter) {
       updateFanDisplay(true);
     }
     else if (tempValue < 33) {
-      // SerialBT.print ("Fan off?");  // Bluetooth disabled
       Serial.println("Temperature normal - stopping fan sweep");
       servoState = SERVO_OFF;
       fanStatus = false; 
@@ -1113,38 +1106,57 @@ void turnOffLight() {
 
 /* Task for light intensity sensing using LDR */
 void lightRead(void *parameter) {
-  int lightValue;
-  int lightReadings[5] = {0}; // Array for moving average
-  int readIndex = 0;
+  float lightValue;  // Float for lux calculation
   
   while (true) {
-    // Take multiple readings for stability
+    // Take single analog reading (no smoothing for faster response)
     int rawReading = analogRead(lightSensor);
     
-    // Store reading in circular buffer for moving average
-    lightReadings[readIndex] = rawReading;
-    readIndex = (readIndex + 1) % 5;
+    // Convert raw analog reading to lux using LDR formula
+    // ESP32 ADC: 12-bit (0-4095), 3.3V reference
+    float voltage = rawReading / 4095.0 * 3.3;  // Convert to voltage (0-3.3V)
+    float resistance = 10000 * voltage / (3.3 - voltage);  // Calculate LDR resistance (10k pull-up)
+    lightValue = pow(RL10 * 1e3 * pow(10, GAMMA) / resistance, (1 / GAMMA));  // Convert to lux
     
-    // Calculate moving average of last 5 readings
-    int sum = 0;
-    for (int i = 0; i < 5; i++) {
-      sum += lightReadings[i];
+    // Ensure lux value is reasonable (protect against division by zero or negative values)
+    if (lightValue < 0 || isnan(lightValue) || isinf(lightValue)) {
+      lightValue = 0;
     }
-    lightValue = sum / 5;
+    if (lightValue > 50000) {  // Cap at reasonable maximum
+      lightValue = 50000;
+    }
     
-    currentLightLevel = lightValue;  // Store for web interface
-    xQueueSend (lightReading, (void*)&lightValue, 10);
+    // Round to 2 decimal places for display
+    currentLightLevel = round(lightValue * 100.0) / 100.0;  // Store for web interface
+    
+    // Debug output for monitoring
+    static unsigned long lastPrint = 0;
+    if (millis() - lastPrint > 5000) {  // Print every 5 seconds
+      Serial.print("LDR Debug - Raw: ");
+      Serial.print(rawReading);
+      Serial.print(", Voltage: ");
+      Serial.print(voltage, 2);
+      Serial.print("V, Resistance: ");
+      Serial.print(resistance, 0);
+      Serial.print("Ω, Lux: ");
+      Serial.println(currentLightLevel, 2);
+      lastPrint = millis();
+    }
+    
+    // Send lux value to queue (convert to int for compatibility)
+    int luxInt = (int)lightValue;
+    xQueueSend (lightReading, (void*)&luxInt, 10);
     
     // Update servo sweep to maintain smooth operation
     updateServoSweep();
     
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    vTaskDelay(500 / portTICK_PERIOD_MS);  // Faster updates (was 2000ms)
   } 
 }
 
 /* Task for bulb control in auto mode */
 void autoLight(void *parameter) {
-  int lightValue;
+  int lightValue;  // This will receive lux values as integers from the queue
   Serial.println("autoLight task started, waiting for light sensor data...");
   
   while (true) { 
@@ -1152,22 +1164,24 @@ void autoLight(void *parameter) {
     
     // Only control light automatically if NOT in manual mode
     if (!manualLightControl) {
-      if (lightValue >= 2200) {
+      // Use lux-based thresholds instead of raw analog values
+      if (lightValue <= 10) {  // Dark - turn on light (was 2200 raw value)
         if (!lightStatus) {  // Only turn on if currently off
           Serial.print("Auto: Light level low (");
           Serial.print(lightValue);
-          Serial.println(") - turning ON LED light");
+          Serial.println(" lux) - turning ON LED light");
           turnOnLight();
         }
       }
-      else if (lightValue < 2200) {
+      else if (lightValue > 20) {  // Bright enough - turn off light (was 2200 raw value, added hysteresis)
         if (lightStatus) {  // Only turn off if currently on
           Serial.print("Auto: Light level sufficient (");
           Serial.print(lightValue);
-          Serial.println(") - turning OFF LED light");
+          Serial.println(" lux) - turning OFF LED light");
           turnOffLight();
         }
       }
+      // Between 10-20 lux = hysteresis zone, maintain current state
     }
     // If in manual mode, don't change light state automatically
     
@@ -1547,9 +1561,6 @@ void setup() {
   introDisplay();  Serial.println("Intro display completed");
   
   // Initialize other components
-  Serial.println("Skipping Bluetooth initialization for now...");
-  // SerialBT.begin("ESP32");  // Temporarily commented out - causes hanging
-  // Serial.println("The device started, now you can pair it with bluetooth!");
   
   Serial.println("Initializing DHT sensor...");
   dht.begin();
@@ -1637,7 +1648,7 @@ void setup() {
     }
   }
   
-  // WiFi setup with improved connection logic
+  // WiFi setup with
   Serial.println("Connecting to WiFi...");
   Serial.print("SSID: ");
   Serial.println(ssid);
@@ -1881,7 +1892,7 @@ void setup() {
         Serial.println("Voice: Switched to MANUAL mode");
       }
       else if (command.indexOf("status") >= 0 || command.indexOf("report") >= 0) {
-        response["action"] = "Current status: Temperature " + String(currentTemperature) + "°C, Light " + String(currentLightLevel) + " lux, Smoke " + String(currentSmokeLevel) + " ppm";
+        response["action"] = "Current status: Temperature " + String(currentTemperature) + "°C, Light " + String(currentLightLevel, 2) + " lux, Smoke " + String(currentSmokeLevel) + " ppm";
         Serial.println("Voice: Status requested");
       }
       else {
@@ -1937,7 +1948,7 @@ void setup() {
       if (currentTemperature > 30 && !fanStatus) {
         suggestions.add("Consider turning on the fan - temperature is high");
       }
-      if (currentLightLevel > 2500 && lightStatus) {
+      if (currentLightLevel > 50 && lightStatus) {
         suggestions.add("Natural light is sufficient - you can turn off the light");
       }
       if (currentSmokeLevel > 2000) {
