@@ -5,3 +5,4 @@
 .vscode/ipch
 lib
 .vscode
+smart_home_app/devtools_options.yaml
